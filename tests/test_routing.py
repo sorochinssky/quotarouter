@@ -315,3 +315,83 @@ def test_extract_reports_the_origin_status_not_a_blank_page(use_transport, keys,
     # an entry with the reason instead of an empty result it cannot explain.
     assert result.payload is not None, result.summary()
     assert "HTTP 403 from origin" in result.payload[0]["error"]
+
+
+def test_extract_retries_only_the_url_that_did_not_come_out(use_transport, keys, monkeypatch):
+    """A batch is not all-or-nothing: the delivered page is kept, the missing one moves on."""
+    scraped: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == JINA:
+            if "blocked.example" in str(request.url):
+                return text_response("Title: \n\nMarkdown Content:\n")  # a wall, not a page
+            return text_response(f"Title: Example\n\nURL Source: https://example.com/\n\n"
+                                 f"Markdown Content:\n{PAGE}")
+        if request.url.path.endswith("/credit-usage"):
+            return json_response(firecrawl_usage(900))
+        scraped.append(str(request.url))
+        return json_response({"success": True, "data": {"markdown": "rescued text",
+                                                        "metadata": {"title": "Blocked",
+                                                                     "sourceURL": "https://blocked.example/"}}})
+
+    keys(FIRECRAWL_API_KEY="k")
+    use_transport(handler)
+    monkeypatch.setenv("ROUTER_EXTRACT_ORDER", "jina,firecrawl")
+    config.reset_settings_for_tests()
+    router = routing.Router()
+
+    result = router.run_extract(["https://example.com/", "https://blocked.example/"])
+    assert result.payload[0]["url"] == "https://example.com/"
+    assert PAGE[:40] in result.payload[0]["content"]
+    assert result.payload[1]["content"] == "rescued text"
+    assert len(scraped) == 1, f"only the missing URL may be scraped, got {scraped}"
+    # both stages did their part, so the last server wins the label
+    assert result.stage == "firecrawl"
+
+
+def test_extract_does_not_escalate_an_origin_403(use_transport, keys, monkeypatch):
+    """The site answered 403: no second vendor is asked, and the answer is final."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.exa.ai":
+            raise AssertionError(f"a page closed to everyone must not be re-fetched: {request.url}")
+        if request.url.path.endswith("/credit-usage"):
+            return json_response(firecrawl_usage(900))
+        if request.url.host == JINA:
+            raise AssertionError("jina is behind firecrawl in this order and must not be asked")
+        return json_response({"success": True, "data": {"markdown": "", "metadata": {
+            "title": "Forbidden", "statusCode": 403, "sourceURL": "https://closed.example/"}}})
+
+    keys(FIRECRAWL_API_KEY="k", EXA_API_KEY="k")
+    use_transport(handler)
+    monkeypatch.setenv("ROUTER_EXTRACT_ORDER", "firecrawl,jina,exa")
+    monkeypatch.setenv("ROUTER_KEYLESS_LAST_RESORT", "false")
+    config.reset_settings_for_tests()
+
+    result = routing.Router().run_extract(["https://closed.example/"])
+    entry = result.payload[0]
+    assert entry["url"] == "https://closed.example/"
+    assert "403" in str(entry.get("error") or ""), entry
+
+
+def test_extract_keeps_the_callers_order(use_transport, keys, monkeypatch):
+    """The payload follows the request order, whatever order the stages answered in."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == JINA:
+            url = str(request.url).replace("https://r.jina.ai/", "")
+            if "second" in url:
+                return text_response("Title: \n\nMarkdown Content:\n")  # leaves the batch
+            return text_response(f"Title: First\n\nURL Source: {url}\n\nMarkdown Content:\n{PAGE}")
+        if request.url.path.endswith("/credit-usage"):
+            return json_response(firecrawl_usage(900))
+        return json_response({"success": True, "data": {"markdown": "second text",
+                                                        "metadata": {"title": "Second",
+                                                                     "sourceURL": "https://second.example/"}}})
+
+    keys(FIRECRAWL_API_KEY="k")
+    use_transport(handler)
+    monkeypatch.setenv("ROUTER_EXTRACT_ORDER", "jina,firecrawl")
+    config.reset_settings_for_tests()
+
+    result = routing.Router().run_extract(["https://first.example/", "https://second.example/"])
+    assert [entry["url"] for entry in result.payload] == ["https://first.example/", "https://second.example/"]
+    assert result.payload[1]["content"] == "second text"

@@ -211,7 +211,78 @@ class Router:
         return self._walk("search", lambda stage: stage.search(query, limit))
 
     def run_extract(self, urls: list[str]) -> RouteResult:
-        return self._walk("extract", lambda stage: stage.extract(urls), urls=urls)
+        """Extract page by page across the chain.
+
+        A batch is not all-or-nothing. When a stage returns text for some URLs and a vendor
+        error for another (a per-domain block, a timeout on one host), only the URL that did
+        not come out moves to the next stage — the rest is already paid for and kept. An
+        answer from the site itself (403/404/410 from origin) is final: nobody else can serve
+        it better, so it never travels further.
+        """
+        urls = [str(u) for u in urls]
+        usable, skipped = self.candidates("extract")
+        result = RouteResult()
+        result.attempts.extend(RouteAttempt(s.stage, False, f"skipped: {s.reason}") for s in skipped)
+
+        found: dict[str, dict[str, Any]] = {}
+        pending = list(urls)
+        reasons: dict[str, str] = {}
+
+        def harvest(entries: Any, stage_name: str) -> int:
+            """Keep the pages a stage delivered; leave the rest in `pending`.
+
+            Matching is by URL, with a positional fallback: some vendors normalise the URL
+            they echo back (a trailing slash, a redirect target), and an answer to the wrong
+            key must not be dropped on the floor.
+            """
+            entries = [e for e in (entries or []) if isinstance(e, dict)]
+            snapshot = list(pending)
+            by_url = {str(entry.get("url") or ""): entry for entry in entries}
+            delivered = 0
+            for index, url in enumerate(snapshot):
+                entry = by_url.get(url)
+                if entry is None and len(entries) == len(snapshot):
+                    entry = entries[index]
+                if entry is None:
+                    continue
+                text = (entry.get("content") or "").strip()
+                if text or _is_origin_answer(entry):
+                    found[url] = entry
+                    if url in pending:
+                        pending.remove(url)
+                    delivered += 1
+                else:
+                    reasons[url] = str(entry.get("error") or "no content")
+            return delivered
+
+        def serve_with(stage: Stage) -> bool:
+            entries = self._attempt(stage, "extract", lambda s: s.extract(list(pending)), result)
+            if entries is None:
+                return False
+            if not harvest(entries, stage.name):
+                return False
+            result.stage = stage.name
+            return True
+
+        for stage in usable:
+            if not pending:
+                break
+            serve_with(stage)
+
+        last_resort = self.stages.get(KEYLESS_NAME)
+        if (pending and self.settings.keyless_last_resort and last_resort is not None
+                and KEYLESS_NAME not in [s.stage for s in result.attempts]):
+            if serve_with(last_resort):
+                result.stage = KEYLESS_NAME
+                logger.warning("quotarouter: %d page(s) left for the keyless tier", len(pending))
+
+        if not found and not pending:
+            return result
+        for url in pending:
+            found[url] = types.page_error(url, reasons.get(url) or "not delivered by any stage")
+        # The order the caller asked for, not the order the stages answered in.
+        result.payload = [found[url] for url in urls if url in found]
+        return result
 
     def _walk(self, capability: str, call: Callable[[Stage], Any], urls: Optional[list[str]] = None) -> RouteResult:
         usable, skipped = self.candidates(capability)
