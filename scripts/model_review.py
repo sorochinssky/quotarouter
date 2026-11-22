@@ -25,6 +25,7 @@ reading the code.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import hashlib
 import json
 import os
 import re
@@ -119,21 +120,96 @@ def bundle(files: list[str]) -> str:
     return "\n".join(parts)
 
 
+BACKSLASH = chr(92)
+
+
+def unescape(text: str) -> str:
+    """Undo one layer of backslash escaping.
+
+    A model that prints JSON inside a JSON string field hands back `{\"verdict\": ...}`, which
+    parses as nothing. That cost a full set of five findings once: it was recorded as
+    "unparsed" and the run was written off as a model that could not follow instructions.
+    """
+    out: list[str] = []
+    index, size = 0, len(text)
+    while index < size:
+        char = text[index]
+        if char == BACKSLASH and index + 1 < size:
+            following = text[index + 1]
+            mapped = {'"': '"', BACKSLASH: BACKSLASH, "n": chr(10), "t": chr(9), "/": "/"}.get(following)
+            if mapped is not None:
+                out.append(mapped)
+                index += 2
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def salvage_findings(text: str) -> tuple[list[dict], str]:
+    """Take as many complete findings as the answer contains, even when it was cut off.
+
+    Reasoning models start the `findings` array and then run out of tokens mid-object. The
+    object before the cut is still valid and still evidence; discarding it because the
+    closing bracket is missing throws away the whole review.
+    """
+    decoder = json.JSONDecoder()
+    verdict = "changes"
+    head = re.search(r'"verdict"\s*:\s*"([a-z]+)"', text)
+    if head:
+        verdict = head.group(1)
+    marker = text.find('"findings"')
+    if marker < 0:
+        return [], verdict
+    start = text.find("[", marker)
+    if start < 0:
+        return [], verdict
+    items: list[dict] = []
+    position = start + 1
+    while True:
+        while position < len(text) and text[position] in " \n\r\t,":
+            position += 1
+        if position >= len(text) or text[position] != "{":
+            break
+        try:
+            item, position = decoder.raw_decode(text, position)
+        except ValueError:
+            break
+        if isinstance(item, dict):
+            items.append(item)
+    return items, verdict
+
+
 def extract_json(raw: str) -> dict:
     """Models wrap JSON in fences or prose; take the outermost object that parses."""
     raw = raw or ""
     fenced = re.findall(r"```(?:json)?\s*(.*?)```", raw, re.S)
-    candidates = fenced + [raw]
-    for candidate in candidates:
+    for candidate in fenced + [raw, unescape(raw)]:
         candidate = candidate.strip()
         start, end = candidate.find("{"), candidate.rfind("}")
         if start < 0 or end <= start:
             continue
         try:
-            return json.loads(candidate[start:end + 1])
+            parsed = json.loads(candidate[start:end + 1])
         except ValueError:
             continue
+        if isinstance(parsed, dict) and "findings" in parsed:
+            return parsed
+    for candidate in (raw, unescape(raw)):
+        items, verdict = salvage_findings(candidate)
+        if items:
+            return {"verdict": verdict, "summary": "(answer was cut off; salvaged what parsed)",
+                    "findings": items, "raw_tail": raw[-800:]}
     return {"verdict": "unparsed", "summary": raw[:400], "findings": [], "raw_tail": raw[-800:]}
+
+
+def fingerprint(files: list[str]) -> str:
+    """Record which code state the reviewer saw, so a stale answer can be spotted later."""
+    digest = hashlib.sha256()
+    for rel in files:
+        digest.update(rel.encode("utf-8"))
+        digest.update((REPO / rel).read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def ask_openrouter(name: str, model: str, files: list[str], timeout: float = 900.0) -> dict:
@@ -143,7 +219,7 @@ def ask_openrouter(name: str, model: str, files: list[str], timeout: float = 900
             {"role": "system", "content": INSTRUCTIONS},
             {"role": "user", "content": bundle(files)},
         ],
-        "max_tokens": 8000,
+        "max_tokens": 16000,
     }
     last = ""
     for attempt in range(3):
@@ -161,8 +237,11 @@ def ask_openrouter(name: str, model: str, files: list[str], timeout: float = 900
                 # `reasoning`; a None here used to crash the parser instead of the reviewer.
                 raw = message.get("content") or message.get("reasoning") or ""
                 parsed = extract_json(raw)
+                finish = (body["choices"][0].get("finish_reason") or "")
                 parsed["_model"] = body.get("model") or model
                 parsed["_transport"] = "openrouter"
+                parsed["_truncated"] = finish == "length"
+                parsed["_source_sha"] = fingerprint(files)
                 parsed["_raw"] = raw
                 return parsed
             last = f"HTTP {response.status_code}: {response.text[:300]}"
@@ -174,7 +253,7 @@ def ask_openrouter(name: str, model: str, files: list[str], timeout: float = 900
             "_transport": "openrouter"}
 
 
-def ask_opencode(name: str, model: str, timeout: float = 900.0) -> dict:
+def ask_opencode(name: str, model: str, timeout: float = 300.0) -> dict:
     prompt = (
         f"{INSTRUCTIONS}\n\nThe repository is at {REPO}. Read the files under quotarouter/ "
         "yourself (they are {}.py modules) and review them. Do NOT modify, create or delete any "
@@ -189,6 +268,7 @@ def ask_opencode(name: str, model: str, timeout: float = 900.0) -> dict:
         parsed = extract_json(raw)
         parsed["_model"] = model
         parsed["_transport"] = "opencode"
+        parsed["_source_sha"] = fingerprint(PACKAGE_FILES)
         parsed["_raw"] = raw
         if done.returncode != 0:
             parsed.setdefault("summary", "")
@@ -225,8 +305,9 @@ def main() -> int:
             (OUT / f"{name}.json").write_text(
                 json.dumps(results[name], ensure_ascii=False, indent=2), encoding="utf-8")
             count = len(results[name].get("findings") or [])
+            notes = "".join(flag for flag in ("_truncated",) if results[name].get(flag))
             print(f"{name:20} {results[name].get('verdict'):9} findings={count:2} "
-                  f"{results[name].get('_model','')}")
+                  f"{results[name].get('_model','')} {notes}")
     return 0
 
 
