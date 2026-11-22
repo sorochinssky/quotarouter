@@ -190,3 +190,14 @@ def test_keenable_search_reports_units(keys):
     outcome = KeenableStage().search("q", 3)
     assert outcome.payload["data"]["web"][0]["url"] == "https://k"
     assert outcome.spent == 1.0
+
+
+def test_jina_domain_block_is_a_page_error_not_a_stage_error():
+    """A 403 that names one domain must not look like a broken key."""
+    from quotarouter import errors
+
+    body = ("Anonymous access to domain github.com blocked until Sun Nov 22 2026 10:47:49 GMT+0000 "
+            "(Coordinated Universal Time) due to previous abuse")
+    assert errors.is_domain_block(body)
+    assert not errors.is_domain_block("Invalid API key")
+    assert not errors.is_domain_block("")

@@ -121,6 +121,12 @@ class JinaStage(Stage):
                 continue
             headers = http_client.header_map(resp)
             if resp.status_code >= 400:
+                # The anonymous tier blocks individual domains for a while. That is one page's
+                # problem: raising here would park Jina for every other site as well.
+                if errors.is_domain_block(resp.text or ""):
+                    results.append(types.page_error(
+                        url, f"jina: blocked for this domain: {errors.short(resp.text or '')}"))
+                    continue
                 try:
                     self._raise_for_status(resp.status_code, resp.text or "", headers)
                 except errors.StageError as exc:

@@ -96,7 +96,27 @@ def classify(status: Optional[int], body: str = "", headers: Optional[dict[str, 
     return TransientError(f"HTTP {status} {_short(body)}", status=status, retry_after=retry_after)
 
 
+# A vendor blocking ONE domain is not a vendor that is down: refusing to serve github.com says
+# nothing about example.com, so the stage must not be parked for it. These markers appear in
+# Jina's anonymous tier ("Anonymous access to domain github.com blocked until ...").
+_DOMAIN_BLOCK_MARKERS = (
+    "anonymous access to domain",
+    "abusealleviationerror",
+    "blocked until",
+)
+
 _TRIM = re.compile(r"\s+")
+
+
+def is_domain_block(text: str) -> bool:
+    """True when the vendor refused THIS domain, not the whole account."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _DOMAIN_BLOCK_MARKERS)
+
+
+def short(text: str, limit: int = 160) -> str:
+    """Public one-line excerpt of a vendor body, for error text a human will read."""
+    return _short(text, limit)
 
 
 def _short(body: str, limit: int = 160) -> str:

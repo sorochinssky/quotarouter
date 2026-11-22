@@ -395,3 +395,33 @@ def test_extract_keeps_the_callers_order(use_transport, keys, monkeypatch):
     result = routing.Router().run_extract(["https://first.example/", "https://second.example/"])
     assert [entry["url"] for entry in result.payload] == ["https://first.example/", "https://second.example/"]
     assert result.payload[1]["content"] == "second text"
+
+
+def test_domain_block_does_not_park_jina(use_transport, keys, monkeypatch):
+    """Jina refused one domain: that page moves on, Jina itself stays usable."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == JINA:
+            body = ("Anonymous access to domain github.com blocked until Sun Nov 22 2026 "
+                    "10:47:49 GMT+0000 (Coordinated Universal Time) due to previous abuse")
+            return text_response(body, status=403)
+        if request.url.path.endswith("/credit-usage"):
+            return json_response(firecrawl_usage(900))
+        return json_response({"success": True, "data": {"markdown": "from firecrawl",
+                                                        "metadata": {"title": "Repo",
+                                                                     "sourceURL": "https://github.com/x/y"}}})
+
+    keys(FIRECRAWL_API_KEY="k")
+    use_transport(handler)
+    monkeypatch.setenv("ROUTER_EXTRACT_ORDER", "jina,firecrawl")
+    monkeypatch.setenv("ROUTER_KEYLESS_LAST_RESORT", "false")
+    config.reset_settings_for_tests()
+    router = routing.Router()
+
+    result = router.run_extract(["https://github.com/x/y"])
+    assert result.payload[0]["content"] == "from firecrawl"
+    assert result.stage == "firecrawl"
+    jina_state = router.ledger.get("jina")
+    assert not jina_state.is_paused(router.now()), "a per-domain refusal is not a stage outage"
+    # and the audit trail must not claim jina succeeded at something it refused
+    assert "jina=ok" not in result.chain_text(), result.chain_text()
+    assert "page-specific" in result.chain_text(), result.chain_text()

@@ -260,6 +260,15 @@ class Router:
             if entries is None:
                 return False
             if not harvest(entries, stage.name):
+                # The stage answered about PAGES, not about itself (this domain is blocked for
+                # the anonymous tier, or the site refused this URL). The credits are already
+                # spent, so the attempt keeps its charge — but calling it "ok" in the audit
+                # trail would hide that nothing came out.
+                if result.attempts and result.attempts[-1].stage == stage.name and result.attempts[-1].ok:
+                    last = result.attempts[-1]
+                    result.attempts[-1] = RouteAttempt(
+                        stage.name, False, f"page-specific: {reasons.get(pending[0], 'no page')}",
+                        spent=last.spent, remaining=last.remaining)
                 return False
             result.stage = stage.name
             return True
@@ -349,7 +358,7 @@ class Router:
         payload = outcome.payload
         if isinstance(payload, list) and capability == "extract":
             successes = [e for e in payload if isinstance(e, dict) and not e.get("error") and (e.get("content") or "").strip()]
-            if not successes and not all(_is_origin_answer(e) for e in payload if isinstance(e, dict)):
+            if not successes and not all(_is_page_specific(e) for e in payload if isinstance(e, dict)):
                 detail = "; ".join(str(e.get("error")) for e in payload[:3] if isinstance(e, dict)) or "no content"
                 self._pause(stage, types.BAD_PAGE, detail)
                 result.attempts.append(RouteAttempt(stage.name, False, f"{types.BAD_PAGE}: {detail}"))
@@ -407,6 +416,18 @@ def _is_origin_answer(entry: dict[str, Any]) -> bool:
     """True when a per-URL error is the SITE's own answer, not the vendor's failure."""
     text = str(entry.get("error") or "")
     return any(marker in text for marker in _ORIGIN_ANSWER)
+
+
+def _is_page_specific(entry: dict[str, Any]) -> bool:
+    """True when the error belongs to this page only, so the stage is still healthy.
+
+    Two cases: the site itself answered (403/404/410 from origin), or the vendor refused this
+    domain (Jina's anonymous tier blocking one host). Neither says anything about the vendor's
+    ability to serve other pages, so neither may pause the stage.
+    """
+    if _is_origin_answer(entry):
+        return True
+    return "blocked for this domain" in str(entry.get("error") or "").lower()
 
 
 def _pause_text(state: "ledger_mod.VendorState", now: float) -> str:
