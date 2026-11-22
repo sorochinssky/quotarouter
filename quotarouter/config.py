@@ -77,6 +77,15 @@ def _order(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return names or default
 
 
+def env(name: str, default: str = "") -> str:
+    """Public accessor for `QUOTAROUTER_<name>` with the legacy `ROUTER_<name>` fallback.
+
+    Other modules (alerts, retention knobs) read their settings through this, so there is one
+    place that knows about the rename.
+    """
+    return _env(name, default)
+
+
 def default_state_dir() -> Path:
     """`QUOTAROUTER_STATE_DIR` wins; otherwise XDG state (`~/.local/state/quotarouter`).
 
@@ -109,6 +118,14 @@ class Settings:
     # honestly with the per-stage reason (False). See README "Last resort".
     keyless_last_resort: bool = field(default_factory=lambda: _flag("KEYLESS_LAST_RESORT", True))
     debug: bool = field(default_factory=lambda: _flag("DEBUG", False))
+    # Per-URL fetches inside one stage run in a small pool: six URLs must not cost six
+    # timeouts in a row. 1 means strictly sequential.
+    extract_workers: int = field(default_factory=lambda: max(1, int(_float("EXTRACT_WORKERS", 4))))
+    # The audit trail is bounded by rotation in the logging path and by `prune` on a schedule.
+    log_max_bytes: int = field(default_factory=lambda: int(_float("LOG_MAX_BYTES", 8 * 1024 * 1024)))
+    log_keep_days: int = field(default_factory=lambda: int(_float("LOG_KEEP_DAYS", 30)))
+    # How often `quotarouter daemon` (or the systemd timer it prints) refreshes vendor balances.
+    probe_interval: float = field(default_factory=lambda: _float("PROBE_INTERVAL", 21600.0))
 
     @property
     def ledger_path(self) -> Path:

@@ -65,7 +65,7 @@ def test_server_answers_initialize_and_lists_its_tools(tmp_path):
         client.notify("notifications/initialized")
         listing = client.send("tools/list")
         names = {tool["name"] for tool in listing["result"]["tools"]}
-        assert names == {"web_search", "web_extract", "quota_status"}
+        assert names == {"web_search", "web_extract", "quota_status", "quota_probe"}
         for tool in listing["result"]["tools"]:
             assert tool["inputSchema"]["type"] == "object"
     finally:

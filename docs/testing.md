@@ -1,17 +1,22 @@
 # How quotarouter is tested
 
-Five levels. Each answers its own question and pays its own price. Run them bottom-up:
-levels 1–3 are free and fast, levels 4–5 spend vendor quota and need an installed Hermes.
+Six levels. Each answers its own question and pays its own price. Run them bottom-up:
+levels 1–4 are free and fast, levels 5–6 spend vendor quota and need an installed Hermes.
 
 ```
 1. Contracts and accounting     pytest -q             0 s, $0      always
 2. Adapters on mocks            pytest -q             1 s, $0      always
 3. Recorded + hostile responses pytest -q             1 s, $0      always
-4. Live vendors                 pytest -m live -q     3 s, ~$0.01  before a release
-5. End-to-end in real Hermes    pytest -m e2e -q     15 s, ~$0.01  before a release and
+4. Operational surface          pytest -q             1 s, $0      always
+5. Live vendors                 pytest -m live -q     3 s, ~$0.01  before a release
+6. End-to-end in real Hermes    pytest -m e2e -q     15 s, ~$0.01  before a release and
                                                                   after any change to the
                                                                   shim, the manifest or config
 ```
+
+`scripts/preflight.sh` runs levels 1–4, `hermes plugins validate hermes_plugin`, and
+`build` + `twine check` in one command; `scripts/preflight.sh --live` adds levels 5–6. There is
+no CI: the gate is local, and `docs/development.md` says what it is for.
 
 ## Level 1 — contracts and accounting (`tests/test_errors.py`, `tests/test_ledger.py`)
 
@@ -48,7 +53,21 @@ answering, not the vendor failing — the chain must not spend the next stage's 
 response by hand, add the file, add a scenario. If a vendor changes its schema, it shows up
 here as a failure instead of as an empty result in production.
 
-## Level 4 — live vendors (`tests/test_live.py`, `tests/test_mcp_integration.py`)
+## Level 4 — operational surface (`tests/test_ops.py`)
+
+**What it proves:** the parts an operator leans on after the plugin "works" behave:
+
+* alerts fire on `no-stage`, `keyless` and `quota`, honour the cooldown, can be forced, reach
+  all three transports, and **never raise** — a broken command or unreachable webhook must not
+  fail a search;
+* the audit trail rotates at the configured size from inside the logging path, and `prune`
+  drops only lines that carry an old timestamp (an unparsable line is evidence: keep it);
+* `daemon` runs exactly N cycles, survives a failing cycle, and reports which vendors gave no
+  answer; `schedule` prints a cron line and systemd units without installing anything;
+* several URLs are fetched concurrently — proved with a `threading.Barrier`, which only lets
+  both requests through if they actually overlap, and would time out on a sequential loop.
+
+## Level 5 — live vendors (`tests/test_live.py`, `tests/test_mcp_integration.py`)
 
 **What it proves:** the keys are alive, endpoints and prices have not moved, Firecrawl's
 `credit-usage` parses, the DeepSeek balance reads, Jina returns text, and the MCP server
@@ -69,7 +88,7 @@ test fails — that is the signal.
 `pytest -m live` runs them as well. Live adapters only, without the stand:
 `pytest -m "live and not e2e"`.
 
-## Level 5 — end-to-end in a real Hermes (`tests/e2e/`)
+## Level 6 — end-to-end in a real Hermes (`tests/e2e/`)
 
 **What it proves:** Hermes really picks the plugin up and hands the result to the **model**.
 Four things sit between "the adapter answered" and "the agent got it", and each fails on its

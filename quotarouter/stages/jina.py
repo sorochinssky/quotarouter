@@ -105,36 +105,33 @@ class JinaStage(Stage):
         raise NotImplementedError("Jina Reader is extract-only")
 
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
+        return self._map_urls(urls, self._one)
+
+    def _one(self, url: str) -> dict[str, Any]:
+        """One page: the reader either returns text or explains why this page did not come out."""
         from ..config import settings
 
         min_chars = settings().min_page_chars
-        results: list[dict[str, Any]] = []
-        for url in urls:
+        try:
+            resp = http_client.get(f"{BASE}{url}", headers={"Accept": "text/plain"}, timeout=45.0)
+        except errors.StageError as exc:  # classified transport failure (timeout, DNS, TLS)
+            return types.page_error(url, f"jina: {exc.kind}: {exc}")
+        except Exception as exc:  # anything else must still be one page's problem
+            logger.warning("jina: unexpected transport error for %s: %s", url, exc)
+            return types.page_error(url, f"jina: transport: {exc}")
+        headers = http_client.header_map(resp)
+        if resp.status_code >= 400:
+            # The anonymous tier blocks individual domains for a while. That is one page's
+            # problem: raising here would park Jina for every other site as well.
+            if errors.is_domain_block(resp.text or ""):
+                return types.page_error(
+                    url, f"jina: blocked for this domain: {errors.short(resp.text or '')}")
             try:
-                resp = http_client.get(f"{BASE}{url}", headers={"Accept": "text/plain"}, timeout=45.0)
-            except errors.StageError as exc:  # classified transport failure (timeout, DNS, TLS)
-                results.append(types.page_error(url, f"jina: {exc.kind}: {exc}"))
-                continue
-            except Exception as exc:  # anything else must still be one page's problem
-                logger.warning("jina: unexpected transport error for %s: %s", url, exc)
-                results.append(types.page_error(url, f"jina: transport: {exc}"))
-                continue
-            headers = http_client.header_map(resp)
-            if resp.status_code >= 400:
-                # The anonymous tier blocks individual domains for a while. That is one page's
-                # problem: raising here would park Jina for every other site as well.
-                if errors.is_domain_block(resp.text or ""):
-                    results.append(types.page_error(
-                        url, f"jina: blocked for this domain: {errors.short(resp.text or '')}"))
-                    continue
-                try:
-                    self._raise_for_status(resp.status_code, resp.text or "", headers)
-                except errors.StageError as exc:
-                    results.append(types.page_error(url, f"jina: {exc.kind}: {exc}"))
-                continue
-            title, source, body = _split_reader_output(resp.text or "")
-            if looks_like_stub(body, min_chars):
-                results.append(types.page_error(url, f"jina: page looks blocked or empty ({len(body)} chars)"))
-                continue
-            results.append(types.document(source or url, title, body, source_url=url))
-        return results
+                self._raise_for_status(resp.status_code, resp.text or "", headers)
+            except errors.StageError as exc:
+                return types.page_error(url, f"jina: {exc.kind}: {exc}")
+            return types.page_error(url, f"jina: HTTP {resp.status_code}")
+        title, source, body = _split_reader_output(resp.text or "")
+        if looks_like_stub(body, min_chars):
+            return types.page_error(url, f"jina: page looks blocked or empty ({len(body)} chars)")
+        return types.document(source or url, title, body, source_url=url)

@@ -61,3 +61,10 @@ GET https://api.deepseek.com/user/balance
   search) → deepseek (balance-paid). Keenable/Tavily are listed but skipped without keys.
 - **extract**: jina (free, no key) → firecrawl (1 credit per page) → exa (more expensive).
   Jina first preserves the scarcest pool — Firecrawl credits are shared with search.
+
+## From an MCP client
+
+`quota_probe` (the MCP tool) runs the same probes as `quotarouter probe` and returns the report
+as JSON; `quota_status` returns what the ledger believes. Use `quota_probe` when a balance was
+changed outside the router (a plan upgrade, a top-up) and `quota_status` for the everyday
+question. Probing costs no vendor credits.

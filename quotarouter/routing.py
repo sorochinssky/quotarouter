@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from . import config, errors, ledger as ledger_mod, types
+from . import alerts, config, errors, ledger as ledger_mod, retention, types
 from .stages import Stage
 from .types import Outcome
 
@@ -400,8 +400,32 @@ class Router:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            retention.maybe_rotate(path, self.settings.log_max_bytes)
         except Exception as exc:
             logger.debug("quotarouter: could not write route log: %s", exc)
+        self._alert_if_degraded(capability, result, extra or {})
+
+    def _alert_if_degraded(self, capability: str, result: RouteResult,
+                           extra: dict[str, Any]) -> None:
+        """Tell a human when the chain is off its normal path. None of this may break a call."""
+        try:
+            if not result.ok:
+                alerts.notify(alerts.NO_STAGE,
+                              f"quotarouter: no stage served a {capability} call",
+                              extra={**extra, "chain": result.chain_text()[:600]})
+                return
+            if result.stage == KEYLESS_NAME:
+                alerts.notify(alerts.KEYLESS,
+                              f"quotarouter: {capability} served by the keyless tier",
+                              extra={**extra, "chain": result.chain_text()[:600]})
+            parked = [a.stage for a in result.attempts
+                      if not a.ok and a.reason.startswith(types.QUOTA)]
+            if parked:
+                alerts.notify(alerts.QUOTA,
+                              f"quotarouter: {', '.join(parked)} out of quota on a {capability} call",
+                              extra={"parked": parked, "capability": capability})
+        except Exception as exc:  # an alert is never worth a failed search
+            logger.debug("quotarouter: alert path failed: %s", exc)
 
 
 _ORIGIN_ANSWER = (

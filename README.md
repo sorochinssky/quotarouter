@@ -41,7 +41,8 @@ The plugin is an ordinary Hermes plugin directory: `hermes_plugin/__init__.py` c
 registry refuses a provider without it and silently registers nothing.
 
 ```bash
-# 1. connect the plugin: symlink the shim directory (it links to the package itself)
+# 1. connect the plugin. The shim imports the package from the same checkout (or from an
+#    installed copy), so a symlink to the directory is enough:
 ln -s /path/to/quotarouter/hermes_plugin ~/.hermes/plugins/quotarouter
 
 # 2. enable the plugin, point both backends at it
@@ -73,7 +74,8 @@ Vendor keys are ordinary environment variables in `~/.hermes/.env`:
 
 The server speaks line-delimited JSON-RPC 2.0 and needs no SDK — one request per line,
 nothing else on stdout. Tools: `web_search {query, limit?}`, `web_extract {urls}`,
-`quota_status {}`.
+`quota_status {}` (what the ledger believes) and `quota_probe {}` (ask the vendors for their real
+balance and store it — no credits spent).
 
 ## Install: as a library
 
@@ -120,16 +122,61 @@ python3 -m quotarouter.cli selftest         # one live search + one live extract
 python3 -m quotarouter.cli disable exa --reason "key rotation"
 python3 -m quotarouter.cli enable exa
 python3 -m quotarouter.cli reset firecrawl  # clear local accounting after a plan change
+python3 -m quotarouter.cli prune --days 30  # drop audit lines older than 30 days
+python3 -m quotarouter.cli daemon --once    # one probe cycle, then exit (what cron calls)
+python3 -m quotarouter.cli schedule         # print cron line + systemd units
+python3 -m quotarouter.cli alert-test       # send one alert through the configured transport
 ```
 
 Add `--json` to any command for machine-readable output.
 
-Run `probe` from cron so the first search of the day does not learn about an empty pool from
-a 402:
+### Scheduled probing
 
-```cron
-17 */6 * * * cd /path/to/quotarouter && . ~/.hermes/.env && /usr/bin/python3 -m quotarouter.cli probe --quiet
+Run `probe` on a schedule so the first search of the day does not learn about an empty pool from
+a 402. `quotarouter schedule` **prints** the units and installs nothing — enabling them is the
+operator's decision:
+
+```bash
+$ python3 -m quotarouter.cli schedule
+# 1. cron — one line, one cycle per run
+17 */6 * * * cd /srv/quotarouter && /usr/bin/python3 -m quotarouter.cli daemon --once
+# 2. systemd (user units) — write both files, then: systemctl --user enable --now quotarouter-probe.timer
+...
 ```
+
+`daemon --interval N` is the same cycle in the foreground (containers, tmux). `--once` is one
+cycle and exit. Every cycle also prunes the audit trail by `QUOTAROUTER_LOG_KEEP_DAYS`.
+
+### Alerts when the chain degrades
+
+A silently-degraded chain is worse than a loud failure: answers keep coming from the keyless
+tier for a week and nobody notices the paid key died. Configure **any one** transport and the
+router speaks up:
+
+```bash
+QUOTAROUTER_ALERT_TELEGRAM="<bot token>:<chat id>"   # Bot API sendMessage
+QUOTAROUTER_ALERT_WEBHOOK="https://example/hook"     # POST {"text": ...}
+QUOTAROUTER_ALERT_COMMAND="notify-send quotarouter {kind}"   # shell, {kind} substituted
+QUOTAROUTER_ALERT_COOLDOWN=900                       # seconds, per kind
+```
+
+Kinds: `no-stage` (nothing could serve), `keyless` (the paid chain was out), `quota` (a vendor
+parked itself). Nothing configured means nothing sent — the default deployment is silent. A
+transport failure is logged and swallowed: an unreachable webhook never fails a search. The
+cooldown state lives in `<state>/alerts.json`, so a restart does not reopen the floodgates.
+
+### Audit trail
+
+`routes.jsonl` rotates itself at `QUOTAROUTER_LOG_MAX_BYTES` (8 MB) — the logging path does it,
+so no cron job is needed for that. Age-based trimming is `quotarouter prune --days N`
+(`QUOTAROUTER_LOG_KEEP_DAYS`, 30 by default), which `daemon` runs once per cycle.
+
+### Parallel page fetching
+
+One `web_extract` call with several URLs asks each vendor for pages in a small pool
+(`QUOTAROUTER_EXTRACT_WORKERS`, default 4; `1` = strictly sequential). Four pages through Jina:
+**2.47 s sequential → 1.18 s with four workers**, same four pages, no credits spent. The chain
+itself stays sequential — one stage at a time — so a stage still cannot hide behind another.
 
 ## Error policy
 
@@ -152,7 +199,7 @@ Full ladder — `docs/testing.md`: what each level proves, what it costs, what c
 evidence. In short:
 
 ```bash
-python3 -m pytest -q                 # 102 tests, offline, no network — CI-ready
+python3 -m pytest -q                 # 128 tests, offline, no network
 python3 -m pytest -m live -q         # real vendors, ~$0.01, spends quota
 python3 -m pytest -m e2e -q          # end-to-end inside a real Hermes, ~$0.01
 python3 tests/e2e/harness.py         # the same without pytest, writes e2e-report.json
@@ -165,19 +212,28 @@ Five levels:
 3. `test_adversarial.py` — recorded vendor responses (`tests/fixtures/`) and hostile cases:
    `success: true` with no rows, HTTP 200 carrying an error body, dropped connection, schema
    change.
-4. `test_live.py`, `test_mcp_integration.py` — real vendors and a real MCP subprocess.
+4. `test_ops.py` — alerting (cooldown, all three transports, failure isolation), log retention
+   (rotate, prune), the probe daemon, `schedule` output, and the per-URL pool (proved with a
+   threading barrier, which only lets both fetches through if they overlap).
+5. `test_live.py`, `test_mcp_integration.py` — real vendors and a real MCP subprocess.
    Marked `live` / offline respectively.
-5. `tests/e2e/` — the plugin inside a real Hermes: loader, provider registry, tool envelope,
+6. `tests/e2e/` — the plugin inside a real Hermes: loader, provider registry, tool envelope,
    config reading, isolation from the live profile. Marked `e2e`.
 
-Levels 4 and 5 do not run by default: `addopts = "-m 'not live and not e2e'"` in
+Levels 5 and 6 do not run by default: `addopts = "-m 'not live and not e2e'"` in
 `pyproject.toml`.
+
+There is no CI in this repository by choice: `scripts/preflight.sh` is the gate (offline suite,
+`hermes plugins validate`, `build` + `twine check`), and `--live` adds the vendor and end-to-end
+levels. What it checks and why is written down in `docs/development.md`.
 
 ## State files
 
 ```
 ~/.local/state/quotarouter/ledger.json    quotas, pauses, billing periods
 ~/.local/state/quotarouter/routes.jsonl   one JSON line per call: who served it, who could not and why
+~/.local/state/quotarouter/routes.jsonl.1 previous generation, after rotation
+~/.local/state/quotarouter/alerts.json    last time each alert kind was sent (cooldown state)
 ```
 
 `QUOTAROUTER_STATE_DIR` overrides the directory. Both files are written atomically

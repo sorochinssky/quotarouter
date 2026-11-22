@@ -7,7 +7,8 @@ Exposed tools:
 
     web_search   {"query": str, "limit": int?}   -> ranked results as JSON text
     web_extract  {"urls": [str]}                 -> page contents as JSON text
-    quota_status {}                              -> what is left per vendor
+    quota_status {}                              -> what is left per vendor, from the ledger
+    quota_probe  {}                              -> ask the vendors for their real balance
 
 Wire it into a client with a command, for example (Claude Desktop `claude_desktop_config.json`):
 
@@ -71,6 +72,14 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Show what is left of each provider's allowance right now.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "quota_probe",
+        "description": (
+            "Ask the providers themselves for their remaining balance and store it, so the "
+            "next call routes on facts instead of reaction to an error. Costs no vendor credits."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -120,6 +129,8 @@ class McpServer:
                 return _result(message_id, self._web_extract(arguments))
             if name == "quota_status":
                 return _result(message_id, self._quota_status())
+            if name == "quota_probe":
+                return _result(message_id, self._quota_probe())
         except Exception as exc:  # a tool failure is a result, not a transport failure
             logger.warning("quotarouter mcp: tool %s failed: %s", name, exc)
             return _result(message_id, _text_result(f"error: {exc}", is_error=True))
@@ -172,6 +183,12 @@ class McpServer:
                 "paused": state.is_paused(now),
                 "pause": state.pause_reason or None,
             }
+        return _text_result(json.dumps(report, ensure_ascii=False, indent=2))
+
+    def _quota_probe(self) -> dict[str, Any]:
+        """Refresh balances from the vendors. A vendor that cannot answer is reported, not fatal."""
+        router = get_router()
+        report = router.probe_all(force=True)
         return _text_result(json.dumps(report, ensure_ascii=False, indent=2))
 
     # --- transport ----------------------------------------------------------------------

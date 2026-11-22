@@ -12,6 +12,7 @@ Adding a vendor = one subclass + one line in `stages/__init__.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from .. import env_source, errors, types
@@ -94,6 +95,23 @@ class Stage:
         raise NotImplementedError
 
     # --- helpers for subclasses --------------------------------------------------------
+    @staticmethod
+    def _map_urls(urls: list[str], fetch: Callable[[str], dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fetch every URL, a few at a time, and keep the caller's order.
+
+        `QUOTAROUTER_EXTRACT_WORKERS` (default 4) is the width; 1 means strictly sequential.
+        A pool, not async: the adapters are synchronous `httpx` calls and the chain itself is
+        sequential by design (one stage at a time), so there is nothing to gain from an event
+        loop here — only from not paying six timeouts one after another.
+        """
+        from ..config import settings
+
+        workers = max(1, int(settings().extract_workers or 1))
+        if workers == 1 or len(urls) <= 1:
+            return [fetch(url) for url in urls]
+        with ThreadPoolExecutor(max_workers=min(workers, len(urls))) as pool:
+            return list(pool.map(fetch, urls))
+
     @staticmethod
     def _raise_for_status(status: int, body: str, headers: dict[str, str] | None = None) -> None:
         if status >= 400:

@@ -69,25 +69,23 @@ class FirecrawlStage(Stage):
         return self._outcome(types.search_ok(rows), spent=spent)
 
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        for url in urls:
-            try:
-                data = self._call("POST", "/v2/scrape", {"url": url, "formats": ["markdown"]}, 45.0)
-            except errors.StageError as exc:
-                results.append(types.page_error(url, str(exc)))
-                continue
-            body = data.get("data") or {}
-            content = str(body.get("markdown") or body.get("content") or "")
-            meta = body.get("metadata") or {}
-            origin_status = meta.get("statusCode")
-            if isinstance(origin_status, int) and origin_status >= 400:
-                results.append(types.page_error(url, f"HTTP {origin_status} from origin {url}"))
-                continue
-            if not content.strip():
-                results.append(types.page_error(url, "empty page"))
-                continue
-            results.append(types.document(str(meta.get("sourceURL") or url), str(meta.get("title") or ""), content))
-        return results
+        return self._map_urls(urls, self._one)
+
+    def _one(self, url: str) -> dict[str, Any]:
+        """One page: 1 credit when it succeeds, nothing when the site itself refused it."""
+        try:
+            data = self._call("POST", "/v2/scrape", {"url": url, "formats": ["markdown"]}, 45.0)
+        except errors.StageError as exc:
+            return types.page_error(url, str(exc))
+        body = data.get("data") or {}
+        content = str(body.get("markdown") or body.get("content") or "")
+        meta = body.get("metadata") or {}
+        origin_status = meta.get("statusCode")
+        if isinstance(origin_status, int) and origin_status >= 400:
+            return types.page_error(url, f"HTTP {origin_status} from origin {url}")
+        if not content.strip():
+            return types.page_error(url, "empty page")
+        return types.document(str(meta.get("sourceURL") or url), str(meta.get("title") or ""), content)
 
     def probe_quota(self) -> Optional[tuple[float, Optional[float], str]]:
         """Real remaining credits and the vendor's own period end — the only exact window we get.

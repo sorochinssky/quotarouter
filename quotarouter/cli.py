@@ -14,9 +14,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Optional
+import time
+from pathlib import Path
+from typing import Callable, Optional
 
-from . import config, ledger as ledger_mod
+from . import alerts, config, ledger as ledger_mod, retention
 from .integrations.hermes import get_router
 
 
@@ -146,6 +148,152 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Drop audit lines older than N days. Safe to run from a timer: it rewrites atomically."""
+    settings = config.settings(refresh=True)
+    days = args.days if args.days is not None else settings.log_keep_days
+    report = retention.prune_directory(settings.state_dir, days, now=time.time())
+    if args.json:
+        print(json.dumps({"days": days, "files": report}, ensure_ascii=False, indent=2))
+        return 0
+    if not report:
+        print(f"{settings.state_dir}: no audit log yet")
+        return 0
+    for name, (kept, dropped) in report.items():
+        print(f"{name}: kept {kept}, dropped {dropped} line(s) older than {days} days")
+    return 0
+
+
+def run_daemon(interval: float, iterations: int, *, probe: Optional[Callable[[], dict]] = None,
+               sleep: Callable[[float], None] = time.sleep,
+               out: Callable[[str], None] = print) -> int:
+    """Probe vendor balances on a fixed interval, and prune the audit trail once per cycle.
+
+    Native scheduling: the same command works under a systemd timer, in a container, or as
+    `quotarouter daemon` in the foreground. `iterations=1` is one cycle and exit, which is what
+    a cron line should call — `quotarouter schedule --print` emits both forms.
+    """
+    def one_cycle() -> dict:
+        if probe is not None:
+            return probe()
+        results = get_router().probe_all(force=True)
+        retention.prune_directory(config.settings().state_dir,
+                                  config.settings().log_keep_days, now=time.time())
+        return results
+
+    cycle = 0
+    while iterations <= 0 or cycle < iterations:
+        cycle += 1
+        try:
+            results = one_cycle()
+            missing = [name for name, info in results.items() if info.get("remaining") is None]
+            out(f"cycle {cycle}: probed {len(results)} vendor(s)"
+                + (f", no answer from {', '.join(missing)}" if missing else ""))
+        except Exception as exc:  # a daemon must outlive a bad cycle
+            out(f"cycle {cycle}: probe failed: {exc}")
+        if iterations > 0 and cycle >= iterations:
+            break
+        sleep(interval)
+    return 0
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    settings = config.settings(refresh=True)
+    interval = args.interval if args.interval is not None else settings.probe_interval
+    return run_daemon(interval, 1 if args.once else 0)
+
+
+def _default_env_file() -> str:
+    """The file to hand systemd, or an empty string when there is nothing worth pointing at.
+
+    `EnvironmentFile` is optional (`-` prefix), so an empty result simply omits the line: a unit
+    that sources a nonexistent file is noise, and guessing paths is worse than saying nothing.
+    """
+    explicit = config.env("ENV_FILE")
+    if explicit:
+        return explicit
+    for candidate in (Path.home() / ".hermes" / ".env",):
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+SYSTEMD_SERVICE = """[Unit]
+Description=quotarouter: refresh vendor quota balances
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={workdir}
+ExecStart={python} -m quotarouter.cli daemon --once
+{env_line}"""
+
+SYSTEMD_TIMER = """[Unit]
+Description=quotarouter: quota refresh timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={interval}
+Unit=quotarouter-probe.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Print the ready-to-use scheduling units. Nothing is installed: that is the operator's call."""
+    settings = config.settings(refresh=True)
+    interval = int(args.interval if args.interval is not None else settings.probe_interval)
+    python = sys.executable or "python3"
+    workdir = str(Path.cwd())
+    env_file = _default_env_file()
+
+    hours = interval // 3600
+    if interval % 3600 == 0 and 0 < hours <= 24 and 24 % hours == 0:
+        cron = f"17 */{hours} * * *"
+    elif interval < 3600:
+        cron = f"*/{max(1, interval // 60)} * * * *"
+    else:
+        cron = "17 * * * *"
+
+    env_line = f"EnvironmentFile=-{env_file}\n" if env_file else ""
+    service = SYSTEMD_SERVICE.format(workdir=workdir, python=python, env_line=env_line)
+
+    if args.json:
+        print(json.dumps({"interval": interval,
+                          "cron": f"{cron} cd {workdir} && {python} -m quotarouter.cli daemon --once",
+                          "systemd_service": service,
+                          "systemd_timer": SYSTEMD_TIMER.format(interval=f"{interval}s")}, indent=2))
+        return 0
+
+    print("# 1. cron — one line, one cycle per run")
+    print(f"{cron} cd {workdir} && {python} -m quotarouter.cli daemon --once")
+    print()
+    print("# 2. systemd (user units) — write both files, then: systemctl --user enable --now quotarouter-probe.timer")
+    print("# ~/.config/systemd/user/quotarouter-probe.service")
+    print(service.rstrip())
+    print()
+    print("# ~/.config/systemd/user/quotarouter-probe.timer")
+    print(SYSTEMD_TIMER.format(interval=f"{interval}s").rstrip())
+    print()
+    print("# 3. foreground — for a container or a terminal")
+    print(f"{python} -m quotarouter.cli daemon --interval {interval}")
+    return 0
+
+
+def cmd_alert_test(args: argparse.Namespace) -> int:
+    """Send one alert through the configured transports, ignoring the cooldown."""
+    sent = alerts.notify(args.kind, f"quotarouter: test alert ({args.kind})", force=True)
+    configured = alerts.settings()
+    if not configured.enabled:
+        print("no alert transport configured — set QUOTAROUTER_ALERT_TELEGRAM, "
+              "QUOTAROUTER_ALERT_WEBHOOK or QUOTAROUTER_ALERT_COMMAND")
+        return 1
+    print("sent" if sent else "configured, but every transport failed (see the log)")
+    return 0 if sent else 1
+
+
 def cmd_serve_mcp(args: argparse.Namespace) -> int:
     """MCP stdio: line-delimited JSON-RPC 2.0 on stdin/stdout. Nothing else is printed."""
     from .integrations.mcp import serve_stdio
@@ -185,6 +333,27 @@ def build_parser() -> argparse.ArgumentParser:
     probe = sub.add_parser("probe", help="ask vendors for their real remaining quota and store it")
     probe.add_argument("--json", action="store_true")
     probe.set_defaults(func=cmd_probe)
+
+    prune = sub.add_parser("prune", help="drop audit lines older than N days")
+    prune.add_argument("--days", type=int, default=None,
+                       help="keep this many days (default: QUOTAROUTER_LOG_KEEP_DAYS or 30)")
+    prune.add_argument("--json", action="store_true")
+    prune.set_defaults(func=cmd_prune)
+
+    daemon = sub.add_parser("daemon", help="probe balances on an interval, forever")
+    daemon.add_argument("--interval", type=float, default=None,
+                        help="seconds between cycles (default: QUOTAROUTER_PROBE_INTERVAL or 21600)")
+    daemon.add_argument("--once", action="store_true", help="one cycle and exit (what cron calls)")
+    daemon.set_defaults(func=cmd_daemon)
+
+    schedule = sub.add_parser("schedule", help="print cron/systemd units for periodic probing")
+    schedule.add_argument("--interval", type=float, default=None)
+    schedule.add_argument("--json", action="store_true")
+    schedule.set_defaults(func=cmd_schedule)
+
+    alert_test = sub.add_parser("alert-test", help="send one alert through the configured transport")
+    alert_test.add_argument("--kind", default="keyless", choices=[alerts.NO_STAGE, alerts.KEYLESS, alerts.QUOTA])
+    alert_test.set_defaults(func=cmd_alert_test)
 
     route = sub.add_parser("route", help="show which vendor a call would use now, and why not others")
     route.set_defaults(func=cmd_route)
