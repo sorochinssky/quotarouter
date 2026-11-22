@@ -20,15 +20,78 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
+
+try:  # POSIX advisory locks; Windows keeps appends atomic-by-size only
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 DEFAULT_KEEP_DAYS = 30
+
+
+_held = threading.local()
+
+
+@contextmanager
+def locked(path: Path, *, exclusive: bool = True) -> Iterator[None]:
+    """Hold the journal's lock file.
+
+    Two writers already collided here without anyone noticing: `log_route` appends a line while
+    `prune` reads the whole file and replaces it, so every line appended during a prune vanished
+    — quietly, in the one file an incident investigation reads. Appends and pruning now share
+    this lock; appends are microseconds, so serialising them costs nothing.
+    """
+    held: dict[str, int] = getattr(_held, "paths", None)
+    if held is None:
+        held = _held.paths = {}
+    key = str(path)
+    if held.get(key):  # the same thread already holds it: a nested call must not deadlock
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
+    if fcntl is None:  # pragma: no cover - Windows
+        held[key] = 1
+        try:
+            yield
+        finally:
+            held[key] = 0
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+")  # noqa: SIM115 - held for the duration of the block
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        held[key] = 1
+        try:
+            yield
+        finally:
+            held[key] = 0
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def append(path: Path, line: str, max_bytes: int = DEFAULT_MAX_BYTES) -> None:
+    """Append one audit line and rotate if the file grew past its bound."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked(path):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+        maybe_rotate(path, max_bytes)
 
 
 def maybe_rotate(path: Path, max_bytes: int = DEFAULT_MAX_BYTES) -> bool:
@@ -73,6 +136,11 @@ def prune(path: Path, days: int = DEFAULT_KEEP_DAYS, *, now: Optional[float] = N
     """
     if days <= 0:
         return (0, 0)
+    with locked(path):
+        return _prune_locked(path, days, now)
+
+
+def _prune_locked(path: Path, days: int, now: Optional[float]) -> tuple[int, int]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:

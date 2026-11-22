@@ -111,6 +111,10 @@ class KeylessStage(Stage):
                 # Keep the kind: a throttled or exhausted anonymous tier must pause this stage,
                 # not look like a page the site refused.
                 return types.page_error(url, f"keyless: {exc}", kind=exc.kind)
+            except Exception as exc:  # one page must not abort the batch
+                logger.warning("keyless: unexpected error for %s: %s", url, exc)
+                return types.page_error(url, f"keyless: {type(exc).__name__}: {exc}",
+                                        kind=types.TRANSIENT)
             if not text.strip():
                 return types.page_error(url, "keyless: empty page")
             return types.document(url, "", text, source_url=url)

@@ -33,6 +33,7 @@ import logging
 import os
 import shlex
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,8 +104,15 @@ def _write_state(state: dict[str, float]) -> None:
 
 
 def notify(kind: str, text: str, *, now: Optional[float] = None, force: bool = False,
-           extra: Optional[dict[str, Any]] = None) -> bool:
-    """Send an alert unless the same kind is cooling down. Returns True when it was sent."""
+           extra: Optional[dict[str, Any]] = None, background: bool = False) -> bool:
+    """Send an alert unless the same kind is cooling down. Returns True when it was dispatched.
+
+    `background=True` hands delivery to a daemon thread: the router calls it from the end of a
+    real search, and a webhook that hangs for its ten-second timeout must not become a
+    ten-second search. The cooldown is recorded before dispatch, so a flood is impossible even
+    while the first message is still in flight — at the price of counting a failed delivery as
+    sent, which the log records.
+    """
     settings_ = settings()
     if not settings_.enabled:
         return False
@@ -117,17 +125,28 @@ def notify(kind: str, text: str, *, now: Optional[float] = None, force: bool = F
         return False
 
     body = text if not extra else f"{text}\n{json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
-    delivered = False
-    if settings_.telegram:
-        delivered |= _send_telegram(settings_.telegram, body)
-    if settings_.webhook:
-        delivered |= _send_webhook(settings_.webhook, body)
-    if settings_.command:
-        delivered |= _send_command(settings_.command, kind, body)
-    if delivered:
-        state[kind] = moment
-        _write_state(state)
-    return delivered
+
+    def deliver() -> bool:
+        delivered = False
+        if settings_.telegram:
+            delivered |= _send_telegram(settings_.telegram, body)
+        if settings_.webhook:
+            delivered |= _send_webhook(settings_.webhook, body)
+        if settings_.command:
+            delivered |= _send_command(settings_.command, kind, body)
+        return delivered
+
+    if not background:
+        delivered = deliver()
+        if delivered:
+            state[kind] = moment
+            _write_state(state)
+        return delivered
+
+    state[kind] = moment
+    _write_state(state)
+    threading.Thread(target=deliver, name="quotarouter-alert", daemon=True).start()
+    return True
 
 
 # --- transports -------------------------------------------------------------------------

@@ -72,11 +72,19 @@ class FirecrawlStage(Stage):
         return self._map_urls(urls, self._one)
 
     def _one(self, url: str) -> dict[str, Any]:
-        """One page: 1 credit when it succeeds, nothing when the site itself refused it."""
+        """One page: 1 credit when it succeeds, nothing when the site itself refused it.
+
+        Anything unexpected stays this page's problem too: inside a thread pool an uncaught
+        exception would abort the whole batch and throw away the pages that already came out.
+        """
         try:
             data = self._call("POST", "/v2/scrape", {"url": url, "formats": ["markdown"]}, 45.0)
         except errors.StageError as exc:
             return types.page_error(url, str(exc), kind=exc.kind)
+        except Exception as exc:  # adapter bug or a vendor payload we did not expect
+            logger.warning("firecrawl: unexpected error for %s: %s", url, exc)
+            return types.page_error(url, f"firecrawl: {type(exc).__name__}: {exc}",
+                                    kind=types.TRANSIENT)
         body = data.get("data") or {}
         content = str(body.get("markdown") or body.get("content") or "")
         meta = body.get("metadata") or {}

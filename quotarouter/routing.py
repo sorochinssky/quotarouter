@@ -417,11 +417,9 @@ class Router:
             **(extra or {}),
         }
         try:
-            path = self.settings.log_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            retention.maybe_rotate(path, self.settings.log_max_bytes)
+            retention.append(path=self.settings.log_path,
+                             line=json.dumps(record, ensure_ascii=False) + "\n",
+                             max_bytes=self.settings.log_max_bytes)
         except Exception as exc:
             logger.debug("quotarouter: could not write route log: %s", exc)
         self._alert_if_degraded(capability, result, extra or {})
@@ -430,21 +428,24 @@ class Router:
                            extra: dict[str, Any]) -> None:
         """Tell a human when the chain is off its normal path. None of this may break a call."""
         try:
+            # Off the call path: a dead webhook must not add ten seconds to a search the user
+            # is waiting for. The cooldown is recorded before dispatch, so a flood still cannot
+            # happen while the first message is in flight.
             if not result.ok:
                 alerts.notify(alerts.NO_STAGE,
                               f"quotarouter: no stage served a {capability} call",
-                              extra={**extra, "chain": result.chain_text()[:600]})
+                              extra={**extra, "chain": result.chain_text()[:600]}, background=True)
                 return
             if result.stage == KEYLESS_NAME:
                 alerts.notify(alerts.KEYLESS,
                               f"quotarouter: {capability} served by the keyless tier",
-                              extra={**extra, "chain": result.chain_text()[:600]})
+                              extra={**extra, "chain": result.chain_text()[:600]}, background=True)
             parked = [a.stage for a in result.attempts
                       if not a.ok and a.reason.startswith(types.QUOTA)]
             if parked:
                 alerts.notify(alerts.QUOTA,
                               f"quotarouter: {', '.join(parked)} out of quota on a {capability} call",
-                              extra={"parked": parked, "capability": capability})
+                              extra={"parked": parked, "capability": capability}, background=True)
         except Exception as exc:  # an alert is never worth a failed search
             logger.debug("quotarouter: alert path failed: %s", exc)
 

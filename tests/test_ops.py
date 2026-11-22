@@ -19,6 +19,18 @@ import pytest
 from quotarouter import alerts, cli, config, http_client, retention, routing, types
 
 
+def wait_for(predicate, timeout: float = 3.0) -> bool:
+    """Alerts are dispatched off the call path, so their effect arrives a moment later."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.02)
+    return False
+
+
 @pytest.fixture(autouse=True)
 def clean_alert_state(monkeypatch):
     """No transports, no cooldown file, no leftover settings between tests."""
@@ -92,8 +104,7 @@ def test_keyless_answer_alerts(monkeypatch, tmp_path):
     result = routing.RouteResult(payload={"data": {"web": []}}, stage=routing.KEYLESS_NAME)
     result.attempts.append(routing.RouteAttempt("exa", False, "quota: HTTP 402", spent=0.007))
     router.log_route("search", result, {"query": "x"})
-    kinds = marker.read_text().split()
-    assert "keyless" in kinds, kinds
+    assert wait_for(lambda: "keyless" in marker.read_text().split() if marker.exists() else False)
 
 
 def test_total_failure_alerts_with_no_stage(monkeypatch, tmp_path):
@@ -103,7 +114,7 @@ def test_total_failure_alerts_with_no_stage(monkeypatch, tmp_path):
     result = routing.RouteResult()
     result.attempts.append(routing.RouteAttempt("exa", False, "auth: HTTP 401"))
     router.log_route("search", result, {"query": "x"})
-    assert marker.read_text().split() == ["no-stage"]
+    assert wait_for(lambda: marker.exists() and marker.read_text().split() == ["no-stage"])
 
 
 def test_quota_park_alerts(monkeypatch, tmp_path):
@@ -114,7 +125,7 @@ def test_quota_park_alerts(monkeypatch, tmp_path):
     result.attempts.append(routing.RouteAttempt("exa", False, f"{types.QUOTA}: HTTP 402"))
     result.attempts.append(routing.RouteAttempt("firecrawl", True, spent=2.0))
     router.log_route("search", result, {"query": "x"})
-    assert "quota" in marker.read_text().split()
+    assert wait_for(lambda: marker.exists() and "quota" in marker.read_text().split())
 
 
 # --- retention ----------------------------------------------------------------------------
@@ -288,3 +299,63 @@ def test_alert_kind_is_substituted_quoted(monkeypatch, tmp_path):
     monkeypatch.setenv("QUOTAROUTER_ALERT_COMMAND", f"sh -c 'echo {{kind}} > {marker}'")
     assert alerts.notify(alerts.QUOTA, "x", now=1000.0) is True
     assert marker.read_text().strip() == "quota"
+
+
+def test_a_hanging_transport_does_not_hang_the_call(monkeypatch, tmp_path):
+    """A webhook with a ten-second timeout must not turn into a ten-second search."""
+    marker = tmp_path / "slow.txt"
+    monkeypatch.setenv("QUOTAROUTER_ALERT_COMMAND", f"sh -c 'sleep 5; echo {{kind}} > {marker}'")
+    started = time.monotonic()
+    assert alerts.notify(alerts.KEYLESS, "served by the keyless tier", now=1000.0,
+                         background=True) is True
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0, f"dispatch took {elapsed:.2f}s — it is still on the call path"
+    assert wait_for(marker.exists, timeout=12.0), "the alert was dropped instead of deferred"
+
+
+def test_prune_waits_for_a_writer_and_keeps_its_line(tmp_path):
+    """Prune rewrites the whole file; a line appended meanwhile must not vanish."""
+    path = tmp_path / "routes.jsonl"
+    path.write_text(json.dumps({"ts": retention_iso(time.time()), "capability": "search"}) + "\n",
+                    encoding="utf-8")
+
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold_the_lock() -> None:
+        with retention.locked(path):
+            ready.set()
+            release.wait(5.0)
+            retention.append(path, json.dumps({"ts": retention_iso(time.time()),
+                                               "capability": "extract", "marker": "late"}) + "\n")
+
+    worker = threading.Thread(target=hold_the_lock, daemon=True)
+    worker.start()
+    assert ready.wait(3.0), "could not take the journal lock"
+
+    pruned: list[tuple[int, int]] = []
+    pruner = threading.Thread(target=lambda: pruned.append(retention.prune(path, days=30)),
+                             daemon=True)
+    pruner.start()
+    time.sleep(0.2)          # the pruner is now blocked on the lock, not rewriting the file
+    release.set()
+    worker.join(5.0)
+    pruner.join(5.0)
+
+    assert "late" in path.read_text(), "prune replaced the file without waiting for the appender"
+
+
+def test_daemon_cycle_prunes_the_audit_trail(monkeypatch):
+    """The unattended path: `daemon` must probe AND trim, not just probe."""
+    calls: list[str] = []
+
+    class FakeRouter:
+        def probe_all(self, force: bool = True) -> dict:
+            calls.append("probe")
+            return {"exa": {"remaining": 9.0}}
+
+    monkeypatch.setattr(cli, "get_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr(retention, "prune_directory",
+                        lambda *a, **k: calls.append("prune") or {})
+    cli.run_daemon(0.0, 1, sleep=lambda _s: None, out=lambda _line: None)
+    assert calls == ["probe", "prune"], calls
