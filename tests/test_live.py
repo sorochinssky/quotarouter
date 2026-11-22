@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from router import http_client, routing
+from router import config, http_client, routing
 from router.stages.exa import ExaStage
 from router.stages.firecrawl import FirecrawlStage
 from router.stages.jina import looks_like_stub
@@ -60,7 +60,9 @@ def test_jina_live_reader_returns_real_text():
     text = live_env("ROUTER_LIVE_URL") if "ROUTER_LIVE_URL" in os.environ else "https://example.com/"
     results = routing.Router().run_extract([text]).payload
     assert results and results[0]["content"], results
-    assert not looks_like_stub(results[0]["content"], 400)
+    # Порог берём из настроек, а не константой: example.com — легально короткая страница,
+    # и «заглушка» здесь означала бы только пустую оболочку.
+    assert not looks_like_stub(results[0]["content"], config.settings(refresh=True).min_page_chars)
 
 
 def test_deepseek_live_balance_is_readable():
