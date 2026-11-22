@@ -1,0 +1,73 @@
+{
+  "ok": true,
+  "home": "/root/.hermes/cache/scratch/web-router-e2e-87bkqpss",
+  "spent": {
+    "search": 1,
+    "extract": 1
+  },
+  "notes": [],
+  "steps": [
+    {
+      "name": "plugin_registry",
+      "ok": true,
+      "seconds": 1.37,
+      "detail": {
+        "provider": "hermes_plugins.web_router.router.provider.RouterProvider",
+        "available": true
+      }
+    },
+    {
+      "name": "search_tool",
+      "ok": true,
+      "seconds": 1.1,
+      "detail": {
+        "backend": "router:exa",
+        "results": 3,
+        "first": "https://hermes-agent.nousresearch.com/"
+      }
+    },
+    {
+      "name": "extract_tool",
+      "ok": true,
+      "seconds": 0.31,
+      "detail": {
+        "chars": 156,
+        "url": "https://example.com/"
+      }
+    },
+    {
+      "name": "state_isolated",
+      "ok": true,
+      "seconds": 0.0,
+      "detail": {
+        "state_dir": "/root/.hermes/cache/scratch/web-router-e2e-87bkqpss/hermes-home/state/web-router",
+        "routes": 2,
+        "served_by": [
+          "exa",
+          "jina"
+        ],
+        "vendors_tracked": [
+          "deepseek",
+          "exa",
+          "firecrawl",
+          "jina"
+        ]
+      }
+    },
+    {
+      "name": "degradation_without_keys",
+      "ok": true,
+      "seconds": 0.0,
+      "detail": {
+        "error_head": "router: no search provider served this call (keenable: skipped: no KEENABLE_API_KEY set; exa: skipped: no EXA_API_KEY set; tavily: skipped: no TAVILY_API_KEY set; firecrawl: skipped: no FIRECRAWL_API_"
+      }
+    },
+    {
+      "name": "isolation",
+      "ok": true,
+      "seconds": 0.0,
+      "detail": "живой профиль не изменён"
+    }
+  ],
+  "at": "2026-11-22T12:47:33+0300"
+}

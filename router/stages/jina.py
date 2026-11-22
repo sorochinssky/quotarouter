@@ -112,8 +112,12 @@ class JinaStage(Stage):
         for url in urls:
             try:
                 resp = http_client.get(f"{BASE}{url}", headers={"Accept": "text/plain"}, timeout=45.0)
-            except Exception as exc:  # transport-level: connection, DNS, timeout
+            except errors.StageError as exc:  # classified transport failure (timeout, DNS, TLS)
                 results.append(types.page_error(url, f"jina: {exc.kind}: {exc}"))
+                continue
+            except Exception as exc:  # anything else must still be one page's problem
+                logger.warning("jina: unexpected transport error for %s: %s", url, exc)
+                results.append(types.page_error(url, f"jina: transport: {exc}"))
                 continue
             headers = http_client.header_map(resp)
             if resp.status_code >= 400:

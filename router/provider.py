@@ -15,6 +15,11 @@ from . import config, routing, types
 
 logger = logging.getLogger(__name__)
 
+try:  # Hermes is present at runtime; the offline test suite must import without it.
+    from agent.web_search_provider import WebSearchProvider as _ProviderBase
+except Exception:  # pragma: no cover - exercised by the standalone test run
+    _ProviderBase = object  # type: ignore[assignment,misc]
+
 PROVIDER_NAME = "router"
 
 _SHARED: Optional["RouterProvider"] = None
@@ -30,8 +35,13 @@ def get_router() -> routing.Router:
         return _SHARED.router
 
 
-class RouterProvider:
-    """Web search + extract backend that spends free allowances in a fixed order."""
+class RouterProvider(_ProviderBase):  # type: ignore[misc,valid-type]
+    """Web search + extract backend that spends free allowances in a fixed order.
+
+    Inherits `agent.web_search_provider.WebSearchProvider` when Hermes is importable: the
+    registry refuses any provider that is not an instance of that ABC, so this is not
+    cosmetic — without the base class the plugin loads and registers nothing.
+    """
 
     name = PROVIDER_NAME
     display_name = "Quota router"

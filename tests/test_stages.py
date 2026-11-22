@@ -17,7 +17,7 @@ from router.stages.firecrawl import FirecrawlStage
 from router.stages.jina import JinaStage, _split_reader_output, looks_like_stub
 from router.stages.keenable import KeenableStage
 from router.stages.tavily import TavilyStage
-from tests.conftest import json_response
+from tests.conftest import json_response, text_response
 
 
 def wire(handler):
@@ -134,12 +134,28 @@ def test_jina_parses_the_reader_header():
 @pytest.mark.parametrize("content,expected", [
     ("x" * 1000, False),
     ("short", True),
+    ("", True),
     ("Please enable JavaScript to continue. " + "x" * 500, True),
     ("Verify you are human " + "x" * 500, True),
     ("Checking your browser " + "x" * 500, True),
+    # Легально короткая страница: 156 символов реального текста. Считать её заглушкой значит
+    # платить кредитами следующего вендора за нормальную страницу.
+    ("This domain is for use in documentation examples without needing permission. "
+     "Avoid use in operations. [Learn more](https://iana.org/help/example-domains)", False),
 ])
 def test_stub_detection(content, expected):
-    assert looks_like_stub(content, 400) is expected
+    assert looks_like_stub(content, 40) is expected
+
+
+def test_example_com_page_is_served_not_escalated(keys):
+    """Регресс из e2e: Jina отдала example.com (156 символов) — это контент, не стена."""
+    page = ("Title: Example Domain\n\nURL Source: https://example.com/\n\nMarkdown Content:\n"
+            "This domain is for use in documentation examples without needing permission. "
+            "Avoid use in operations.\n\n[Learn more](https://iana.org/help/example-domains)\n")
+    wire(lambda r: text_response(page))
+    results = JinaStage().extract(["https://example.com/"])
+    assert "error" not in results[0], results[0]
+    assert "documentation examples" in results[0]["content"]
 
 
 def test_jina_per_url_throttle_becomes_an_error_entry():

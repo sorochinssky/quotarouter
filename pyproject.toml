@@ -22,5 +22,6 @@ packages = ["router"]
 testpaths = ["tests"]
 markers = [
     "live: hits real vendor APIs, needs keys; excluded by default (run with -m live)",
+    "e2e: drives the plugin through real Hermes tools in an isolated HERMES_HOME; excluded by default (run with -m e2e)",
 ]
-addopts = "-m 'not live' --strict-markers"
+addopts = "-m 'not live and not e2e' --strict-markers"

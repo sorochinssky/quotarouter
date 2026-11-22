@@ -25,16 +25,17 @@ Hermes так не умеет: `web.search_backend` — одно имя, а вс
 
 ## Установка
 
-Плагин — обычный пакет Hermes: `router/__init__.py` вызывает
-`ctx.register_web_search_provider(RouterProvider())`, контракт взят из
-`agent/web_search_provider.py` (Hermes >= 0.21).
+Плагин — обычный каталог-плагин Hermes: `hermes_plugin/__init__.py` вызывает
+`ctx.register_web_search_provider(RouterProvider())`. `RouterProvider` наследует
+`agent.web_search_provider.WebSearchProvider` — это обязательно: реестр Hermes отказывает
+провайдеру без этого базового класса и молча не регистрирует его.
 
 ```bash
-# 1. положить пакет в каталог плагинов профиля
-ln -s /root/repos/hermes-web-router/router /root/.hermes/plugins/web-router/router
-# (или скопировать пакет целиком; hermes plugins install ждёт манифест plugin.yaml)
+# 1. подключить плагин: симлинк каталога-шима (внутри него симлинк на пакет router)
+ln -s /root/repos/hermes-web-router/hermes_plugin ~/.hermes/plugins/web-router
 
-# 2. переключить бэкенды
+# 2. включить плагин и переключить бэкенды
+hermes plugins enable web-router
 hermes config set web.search_backend router
 hermes config set web.extract_backend router
 hermes config set web.keyless_rescue false   # резерв — своей последней ступенью
@@ -100,21 +101,31 @@ python -m router.cli reset firecrawl # сбросить локальный уч�
 
 ## Тестирование
 
+Подробно — `docs/testing.md` (лестница уровней: что доказывает, сколько стоит, что считать
+доказательством). Коротко:
+
 ```bash
-python -m pytest -q            # 78 тестов, офлайн, без сети — годится для CI
-python -m pytest -m live -q    # живые вызовы вендоров, тратят квоту
+python -m pytest -q             # 81 тест, офлайн, без сети — годится для CI
+python -m pytest -m live -q     # живые вендоры, ~$0.01, тратит квоту
+python -m pytest -m e2e -q      # сквозной прогон в настоящем Hermes, ~$0.01
+python tests/e2e/harness.py     # то же без pytest, пишет e2e-report.json
 ```
 
-Четыре уровня:
+Пять уровней:
 
 1. `test_errors.py`, `test_ledger.py` — классификация ответов и учёт, таблицами.
 2. `test_stages.py`, `test_routing.py` — адаптеры и цепь на `httpx.MockTransport`.
 3. `test_adversarial.py` — записанные ответы (`tests/fixtures/`) и враждебные случаи:
    `success: true` без строк, HTTP 200 с телом ошибки, обрыв соединения, смена схемы.
-4. `test_live.py` — реальные вендоры, помечены `live`, по умолчанию не бегут.
+4. `test_live.py` — реальные вендоры, маркер `live`.
+5. `tests/e2e/` — плагин внутри настоящего Hermes: загрузчик, реестр провайдеров, конверт
+   тула, чтение конфига, изоляция от живого профиля. Маркер `e2e`.
 
-Живой прогон 2026-11-22: 4 из 4 прошли (exa search, firecrawl credit-usage, jina reader,
-deepseek balance).
+Уровни 4 и 5 по умолчанию не бегут: `addopts = "-m 'not live and not e2e'"`.
+
+Факты прогонов 2026-11-22: `81 passed` офлайн; 4/4 живых (exa search, firecrawl
+credit-usage, jina reader, deepseek balance); e2e — 6/6 шагов, поиск через `router:exa`,
+вытяжка через `jina`, изоляция подтверждена.
 
 ## Файлы состояния
 

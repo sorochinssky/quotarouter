@@ -76,8 +76,11 @@ class Settings:
     state_dir: Path = field(default_factory=default_state_dir)
     timeout: float = field(default_factory=lambda: _float("ROUTER_TIMEOUT", 25.0))
     extract_timeout: float = field(default_factory=lambda: _float("ROUTER_EXTRACT_TIMEOUT", 45.0))
-    # A page shorter than this is "suspect": the extract chain tries the next stage.
-    min_page_chars: int = field(default_factory=lambda: int(_float("ROUTER_MIN_PAGE_CHARS", 400)))
+    # Below this a page is a shell, not an article: the extract chain tries the next stage.
+    # Deliberately small — a legitimately short page (example.com is ~160 chars) must NOT be
+    # treated as blocked, or the chain burns the next vendor's credits and parks a healthy
+    # stage. Bot/JS walls are caught by their own markers, not by length.
+    min_page_chars: int = field(default_factory=lambda: int(_float("ROUTER_MIN_PAGE_CHARS", 40)))
     allow_keyless: bool = field(default_factory=lambda: _flag("ROUTER_ALLOW_KEYLESS", True))
     # When every configured stage is spent: answer from the anonymous free tier (True) or fail
     # honestly with the per-stage reason (False). See README "Last resort".
