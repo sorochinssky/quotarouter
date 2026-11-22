@@ -1,70 +1,68 @@
 ## ADDED Requirements
 
-### Requirement: Сквозной прогон идёт через публичные функции Hermes
+### Requirement: The end-to-end run goes through Hermes' public functions
 
-Проверка MUST вызывать `tools.web_tools.web_search_tool` и `tools.web_tools.web_extract_tool`,
-а не внутренние классы роутера: только так проверяются загрузчик плагинов, реестр
-провайдеров, конверт ответа и чтение конфига.
+The check MUST call `tools.web_tools.web_search_tool` and `tools.web_tools.web_extract_tool`,
+not the router's internal classes: only that way do the plugin loader, the provider registry,
+the response envelope and config reading get exercised.
 
-#### Scenario: поиск из тула обслуживается цепочкой
-- **WHEN** в изолированном профиле стоит `web.search_backend: router` и есть ключи вендоров
-- **THEN** `web_search_tool` возвращает JSON с `success: true` и непустым `data.web`
-- **AND** `data.backend` начинается с `router:`, то есть ответ пришёл от ступени цепочки
+#### Scenario: A tool search is served by the chain
+- **WHEN** the isolated profile sets `web.search_backend: quotarouter` and vendor keys are present
+- **THEN** `web_search_tool` returns JSON with `success: true` and a non-empty `data.web`
+- **AND** `data.backend` starts with `quotarouter:`, meaning a chain stage answered
 
-#### Scenario: вытяжка из тула обслуживается цепочкой
-- **WHEN** вызывается `web_extract_tool` для доступной страницы
-- **THEN** в ответе `results[0].content` непустой и длиннее `ROUTER_MIN_PAGE_CHARS`
+#### Scenario: A tool extract is served by the chain
+- **WHEN** `web_extract_tool` is called for a reachable page
+- **THEN** `results[0].content` is non-empty and longer than `QUOTAROUTER_MIN_PAGE_CHARS`
 
-### Requirement: Стенд изолирован от живого профиля
+### Requirement: The stand is isolated from the live profile
 
-Прогон MUST использовать отдельный `HERMES_HOME` и MUST NOT читать или писать состояние
-живого профиля.
+A run MUST use its own `HERMES_HOME` and MUST NOT read or write the live profile's state.
 
-#### Scenario: состояние пишется в изолированный каталог
-- **WHEN** прогон завершил поиск и вытяжку
-- **THEN** `ledger.json` и `routes.jsonl` лежат в `<temp>/state/web-router`
-- **AND** живой `~/.hermes/state/web-router` не изменён
+#### Scenario: State is written into the isolated directory
+- **WHEN** the run has finished a search and an extract
+- **THEN** `ledger.json` and `routes.jsonl` live in `<temp>/state/quotarouter`
+- **AND** the live `~/.local/state/quotarouter` is unchanged
 
-#### Scenario: живой конфиг не переключается
-- **WHEN** стенд задаёт `web.search_backend: router`
-- **THEN** правка сделана только в `<temp>/config.yaml`, живой `config.yaml` совпадает с
-  бэкапом по хешу
+#### Scenario: The live config is not switched
+- **WHEN** the stand sets `web.search_backend: quotarouter`
+- **THEN** the edit exists only in `<temp>/config.yaml`, and the live `config.yaml` matches its
+  backup by hash
 
-### Requirement: Деградация без вендоров честная
+### Requirement: Degradation without vendors is honest
 
-Если ни одна ступень не может обслужить вызов, инструмент MUST вернуть `success: false`
-с причинами по ступеням и MUST NOT падать исключением.
+If no stage can serve the call, the tool MUST return `success: false` with a per-stage reason
+and MUST NOT raise.
 
-#### Scenario: пустые ключи и выключенный резерв
-- **WHEN** нет ни одного ключа вендора и `ROUTER_KEYLESS_LAST_RESORT=false`
-- **THEN** `web_search_tool` возвращает `success: false`
-- **AND** текст ошибки содержит имена ступеней и причину пропуска каждой
+#### Scenario: No keys and the fallback disabled
+- **WHEN** no vendor key is present and `QUOTAROUTER_KEYLESS_LAST_RESORT=false`
+- **THEN** `web_search_tool` returns `success: false`
+- **AND** the error text names every stage and why it was skipped
 
-### Requirement: Прогон даёт машиночитаемый отчёт и код возврата
+### Requirement: A run produces a machine-readable report and an exit code
 
-Каждый прогон MUST писать отчёт JSON со списком шагов, их длительностью и причиной провала,
-и MUST завершаться кодом 0 только при успехе всех шагов.
+Every run MUST write a JSON report listing each step, its duration and its failure reason, and
+MUST exit 0 only when every step passed.
 
-#### Scenario: успешный прогон
-- **WHEN** все шаги прошли
-- **THEN** отчёт содержит `"ok": true` и по записи на каждый шаг
-- **AND** код возврата 0
+#### Scenario: A successful run
+- **WHEN** all steps passed
+- **THEN** the report carries `"ok": true` and one entry per step
+- **AND** the exit code is 0
 
-#### Scenario: провал шага
-- **WHEN** хотя бы один шаг не прошёл проверку
-- **THEN** отчёт содержит запись шага с `"ok": false` и `detail`
-- **AND** код возврата не 0
+#### Scenario: A failed step
+- **WHEN** at least one step failed its check
+- **THEN** the report carries that step with `"ok": false` and a `detail`
+- **AND** the exit code is not 0
 
-### Requirement: Способы тестирования записаны в репозитории
+### Requirement: Testing instructions live in the repository
 
-Репозиторий MUST содержать `docs/testing.md` с лестницей уровней тестов: что проверяет
-каждый уровень, какую квоту тратит, что считается доказательством и какой командой
-запускается.
+The repository MUST contain `docs/testing.md` with the ladder of test levels: what each level
+checks, what quota it spends, what counts as evidence, and the command that runs it.
 
-#### Scenario: новый участник находит способ запуска
-- **WHEN** участник открывает `docs/testing.md`
-- **THEN** для каждого уровня указаны команда, стоимость в квоте и критерий приёмки
+#### Scenario: A newcomer finds how to run the tests
+- **WHEN** a contributor opens `docs/testing.md`
+- **THEN** every level states its command, its quota cost and its acceptance criterion
 
-#### Scenario: e2e не бежит по умолчанию
-- **WHEN** запускается `python -m pytest -q`
-- **THEN** тесты с маркерами `live` и `e2e` исключены из прогона
+#### Scenario: e2e does not run by default
+- **WHEN** `python3 -m pytest -q` runs
+- **THEN** tests marked `live` and `e2e` are excluded

@@ -11,13 +11,13 @@ import json
 import httpx
 import pytest
 
-from router import errors, http_client, types
-from router.stages.exa import ExaStage
-from router.stages.firecrawl import FirecrawlStage
-from router.stages.jina import JinaStage, _split_reader_output, looks_like_stub
-from router.stages.keenable import KeenableStage
-from router.stages.tavily import TavilyStage
-from tests.conftest import json_response, text_response
+from quotarouter import errors, http_client, types
+from quotarouter.stages.exa import ExaStage
+from quotarouter.stages.firecrawl import FirecrawlStage
+from quotarouter.stages.jina import JinaStage, _split_reader_output, looks_like_stub
+from quotarouter.stages.keenable import KeenableStage
+from quotarouter.stages.tavily import TavilyStage
+from conftest import json_response, text_response
 
 
 def wire(handler):
@@ -138,8 +138,8 @@ def test_jina_parses_the_reader_header():
     ("Please enable JavaScript to continue. " + "x" * 500, True),
     ("Verify you are human " + "x" * 500, True),
     ("Checking your browser " + "x" * 500, True),
-    # Легально короткая страница: 156 символов реального текста. Считать её заглушкой значит
-    # платить кредитами следующего вендора за нормальную страницу.
+    # A legitimately short page: 156 characters of real text. Treating it as a stub would
+    # spend the next vendor's credits on a perfectly good page.
     ("This domain is for use in documentation examples without needing permission. "
      "Avoid use in operations. [Learn more](https://iana.org/help/example-domains)", False),
 ])
@@ -148,7 +148,7 @@ def test_stub_detection(content, expected):
 
 
 def test_example_com_page_is_served_not_escalated(keys):
-    """Регресс из e2e: Jina отдала example.com (156 символов) — это контент, не стена."""
+    """Regression from e2e: Jina returned example.com (156 chars) — content, not a wall."""
     page = ("Title: Example Domain\n\nURL Source: https://example.com/\n\nMarkdown Content:\n"
             "This domain is for use in documentation examples without needing permission. "
             "Avoid use in operations.\n\n[Learn more](https://iana.org/help/example-domains)\n")

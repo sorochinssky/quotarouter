@@ -1,28 +1,31 @@
-"""Плагин Hermes: каталог-обёртка, из которого виден пакет `router`.
+"""Hermes plugin shim: a directory from which the `quotarouter` package is importable.
 
-Почему отдельный каталог, а не корень репозитория: загрузчик Hermes импортирует каталог
-плагина как `hermes_plugins.<slug>` и кладёт его в `__path__`. Если бы плагин-каталогом был
-корень репозитория, `__init__.py` в корне сломал бы сборку тестов (pytest принимает такой
-каталог за пакет `__init__`). Здесь же лежит только шим и симлинк `router -> ../router`.
+Why a separate directory instead of the repository root: the Hermes loader imports the plugin
+directory as `hermes_plugins.<slug>` and puts it on the module's `__path__`. If the plugin
+directory were the repository root, a root-level `__init__.py` would break pytest collection
+(pytest then treats that directory as a package named `__init__`). Here there is only the shim
+and a symlink `quotarouter -> ../quotarouter`.
 
-Относительный импорт обязателен: абсолютный (`from router.provider import ...`) подхватил бы
-пакет из `sys.path`, то есть возможно другой файл, а не тот, что лежит в репозитории.
+The relative import is mandatory: an absolute one (`from quotarouter.integrations... import`)
+would resolve through `sys.path` and could pick up a different copy of the package than the
+one in this repository.
 
-Установка — симлинк этого каталога в плагины профиля:
+Install by symlinking this directory into the profile's plugin directory:
 
-    ln -s /root/repos/hermes-web-router/hermes_plugin ~/.hermes/plugins/web-router
+    ln -s /path/to/repo/hermes_plugin ~/.hermes/plugins/quotarouter
 
-Тогда плагин и CLI (`python -m router.cli`) видят один и тот же код: симлинк `router`
-ведёт в тот же каталог пакета.
+Then both the plugin and the CLI (`python3 -m quotarouter.cli`) see the same code, because the
+`quotarouter` symlink points at the package directory itself.
 """
 
 from __future__ import annotations
 
-from .router import RouterProvider, __version__
+from .quotarouter import __version__
+from .quotarouter.integrations.hermes import RouterProvider
 
 __all__ = ["RouterProvider", "register", "__version__"]
 
 
 def register(ctx) -> None:
-    """Точка входа плагина: регистрирует ОДИН бэкенд `router` в реестре Hermes."""
+    """Plugin entry point: registers ONE backend named `quotarouter`."""
     ctx.register_web_search_provider(RouterProvider())

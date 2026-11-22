@@ -1,20 +1,20 @@
-"""E2E-стенд: плагин внутри настоящего Hermes, в изолированном HERMES_HOME.
+"""E2E stand: the plugin inside a real Hermes, in an isolated HERMES_HOME.
 
-Зачем отдельный стенд, если есть юнит-тесты: между «адаптер ответил» и «агент получил
-результат» стоят загрузчик плагинов, реестр провайдеров (он отказывает любому провайдеру,
-который не наследует `WebSearchProvider`), конверт ответа тула и чтение конфига. Каждую из
-этих четырёх частей ломает отдельная ошибка, и все четыре офлайн-тесты не видят.
+Why a separate stand when unit tests exist: between "the adapter answered" and "the agent got
+a result" sit four things, and each of them fails on its own — the plugin loader, the provider
+registry (it silently refuses any provider that does not inherit `WebSearchProvider`), the tool
+response envelope, and config reading. Offline tests see none of them.
 
-Изоляция: прогон живёт в своём `HERMES_HOME` (config.yaml + plugins + state). Живой профиль
-не читается и не пишется — это проверяется шагом `isolation`.
+Isolation: the run lives in its own `HERMES_HOME` (config.yaml + plugins + state). The live
+profile is neither read nor written, and a dedicated step proves it.
 
-Запуск:
+Usage:
 
-    python tests/e2e/harness.py                  # живой прогон, тратит 1 поиск + 1 страницу
-    python tests/e2e/harness.py --no-live        # только шаги без ключей (деградация, изоляция)
-    python tests/e2e/harness.py --keep-home      # оставить каталог стенда для разбора
+    python tests/e2e/harness.py                 # live run, costs 1 search + 1 page
+    python tests/e2e/harness.py --no-live       # keyless steps only: degradation, isolation
+    python tests/e2e/harness.py --keep-home     # keep the stand directory for inspection
 
-Код возврата: 0 — все шаги прошли, 1 — есть упавший шаг, 2 — стенд не собрался.
+Exit code: 0 all steps passed, 1 a step failed, 2 the stand could not be built.
 """
 
 from __future__ import annotations
@@ -35,9 +35,12 @@ from typing import Any, Optional
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HERMES_ROOT = Path(os.environ.get("HERMES_ROOT", "/usr/local/lib/hermes-agent"))
 LIVE_HOME = Path(os.environ.get("HERMES_LIVE_HOME", str(Path.home() / ".hermes")))
-CHILD_TIMEOUT = float(os.environ.get("ROUTER_E2E_CHILD_TIMEOUT", "180"))
+LIVE_STATE = Path(os.environ.get("QUOTAROUTER_LIVE_STATE",
+                                 str(Path.home() / ".local" / "state" / "quotarouter")))
+CHILD_TIMEOUT = float(os.environ.get("QUOTAROUTER_E2E_CHILD_TIMEOUT", "180"))
+PLUGIN_NAME = "quotarouter"
 
-# Ключи, которые стенд передаёт дочернему процессу. Отсутствующие просто не попадут в env.
+# Keys the stand passes to the child process. Absent ones simply do not reach its environment.
 VENDOR_KEYS = (
     "EXA_API_KEY",
     "FIRECRAWL_API_KEY",
@@ -49,11 +52,11 @@ VENDOR_KEYS = (
 
 
 # ---------------------------------------------------------------------------------------
-# Дочерний сценарий. Живёт отдельным файлом, потому что должен исполняться в процессе с
-# другим HERMES_HOME: подмена env внутри своего процесса не переинициализирует Hermes.
+# Child scenario. A separate file on disk because it must run in a process with a different
+# HERMES_HOME: swapping env inside this process does not reinitialise Hermes.
 # ---------------------------------------------------------------------------------------
 CHILD_SOURCE = r'''
-"""Один прогон шагов внутри Hermes. Печатает JSON-отчёт в stdout."""
+"""One run of the steps inside Hermes. Prints a JSON report to stdout."""
 
 import asyncio
 import json
@@ -77,10 +80,8 @@ def step(name):
 
 
 def _result(payload):
-    """Разобрать ответ тула: строка JSON или уже dict."""
-    if isinstance(payload, str):
-        return json.loads(payload)
-    return payload
+    """A tool answers with a JSON string; tolerate an already-parsed dict."""
+    return json.loads(payload) if isinstance(payload, str) else payload
 
 
 @step("plugin_registry")
@@ -88,17 +89,17 @@ def plugin_registry(state):
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
 
     discover_plugins(force=True)
-    loaded = get_plugin_manager()._plugins.get("web-router")
+    loaded = get_plugin_manager()._plugins.get("quotarouter")
     if loaded is None:
-        raise AssertionError("плагин web-router не найден загрузчиком")
+        raise AssertionError("the quotarouter plugin was not discovered")
     if not loaded.enabled:
-        raise AssertionError(f"плагин не включён: {loaded.error}")
+        raise AssertionError(f"the plugin is installed but not enabled: {loaded.error}")
 
     from agent.web_search_registry import get_provider
 
-    provider = get_provider("router")
+    provider = get_provider("quotarouter")
     if provider is None:
-        raise AssertionError("реестр Hermes не отдал провайдера 'router'")
+        raise AssertionError("the Hermes registry returned no provider named 'quotarouter'")
     state["provider"] = type(provider).__module__ + "." + type(provider).__name__
     return {"provider": state["provider"], "available": provider.is_available()}
 
@@ -109,10 +110,10 @@ def search_tool(state):
 
     data = _result(web_search_tool(state["query"], 3))
     if not data.get("success"):
-        raise AssertionError(f"search вернул ошибку: {data.get('error')}")
+        raise AssertionError(f"search returned an error: {data.get('error')}")
     web = (data.get("data") or {}).get("web") or []
     if not web:
-        raise AssertionError("search вернул успех без результатов")
+        raise AssertionError("search reported success but returned no results")
     backend = (data.get("data") or {}).get("backend") or ""
     state["backend"] = backend
     state["search_urls"] = [row.get("url") for row in web[:3]]
@@ -126,42 +127,42 @@ def extract_tool(state):
     data = _result(asyncio.run(web_extract_tool([state["url"]])))
     results = data.get("results") or []
     if not results:
-        raise AssertionError(f"extract не вернул страниц: {data}")
+        raise AssertionError(f"extract returned no pages: {data}")
     content = results[0].get("content") or ""
-    minimum = int(os.environ.get("ROUTER_MIN_PAGE_CHARS", "40"))
+    minimum = int(os.environ.get("QUOTAROUTER_MIN_PAGE_CHARS", "40"))
     if len(content) < minimum:
-        raise AssertionError(f"страница короче порога {minimum}: {len(content)} символов, "
-                            f"ошибка={results[0].get('error')}")
+        raise AssertionError(f"the page is shorter than {minimum} characters: {len(content)}, "
+                             f"error={results[0].get('error')}")
     state["extract_chars"] = len(content)
     return {"chars": len(content), "url": results[0].get("url")}
 
 
 @step("search_degradation")
 def search_degradation(state):
-    """Ни одна ступень не может обслужить: ждём честную ошибку, а не трейсбек."""
+    """No stage can serve this call: expect an honest error, not a traceback."""
     from tools.web_tools import web_search_tool
 
     data = _result(web_search_tool(state["query"], 3))
     if data.get("success"):
-        raise AssertionError("ожидали отказ, получили успех — в стенде остались ключи вендоров")
+        raise AssertionError("expected a refusal, got success - the stand still holds vendor keys")
     error = str(data.get("error") or "")
-    if "router" not in error:
-        raise AssertionError(f"ошибка не от роутера: {error[:200]}")
+    if "quotarouter" not in error:
+        raise AssertionError(f"the error did not come from the router: {error[:200]}")
     state["degraded_error"] = error
     return {"error_head": error[:200]}
 
 
 @step("state_isolated")
 def state_isolated(state):
-    """Учёт должен появиться под ЭТИМ HERMES_HOME."""
-    state_dir = Path(os.environ["ROUTER_STATE_DIR"])
+    """Accounting must land under THIS HERMES_HOME, not in the live profile."""
+    state_dir = Path(os.environ["QUOTAROUTER_STATE_DIR"])
     ledger_path = state_dir / "ledger.json"
     routes_path = state_dir / "routes.jsonl"
     if not routes_path.exists():
-        raise AssertionError(f"журнал маршрутов не создан: {routes_path}")
+        raise AssertionError(f"the route log was not written: {routes_path}")
     lines = [json.loads(line) for line in routes_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not lines:
-        raise AssertionError("журнал маршрутов пуст")
+        raise AssertionError("the route log is empty")
     served = [line for line in lines if line.get("ok") and line.get("served_by")]
     ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
     return {
@@ -191,7 +192,7 @@ def main():
                                     "detail": f"{type(exc).__name__}: {exc}",
                                     "traceback": traceback.format_exc()[-1500:]})
             report["ok"] = False
-            break  # дальнейшие шаги зависят от предыдущих
+            break  # the remaining steps depend on the previous ones
     report["state"] = {k: v for k, v in state.items() if k in ("backend", "search_urls", "extract_chars")}
     print("===E2E-REPORT===")
     print(json.dumps(report, ensure_ascii=False))
@@ -238,7 +239,7 @@ class RunReport:
 
 
 # ---------------------------------------------------------------------------------------
-# Стенд
+# The stand
 # ---------------------------------------------------------------------------------------
 def vendor_keys(present_only: bool = True) -> dict[str, str]:
     keys = {name: os.environ[name] for name in VENDOR_KEYS if os.environ.get(name)}
@@ -249,51 +250,53 @@ def vendor_keys(present_only: bool = True) -> dict[str, str]:
 
 def build_home(base: Path, *, keys: dict[str, str], allow_keyless: bool = False,
                search_order: Optional[str] = None, extract_order: Optional[str] = None) -> Path:
-    """Собрать изолированный HERMES_HOME: конфиг, .env, плагин.
+    """Build an isolated HERMES_HOME: config, .env, plugin.
 
-    Плагин подключён симлинком на `hermes_plugin/`: внутри него симлинк `router -> ../router`,
-    то есть стенд проверяет ровно тот пакет, который лежит в репозитории.
+    The plugin is a symlink to `hermes_plugin/`, which itself links to `../quotarouter`, so the
+    stand exercises exactly the package in this repository - not a copy that drifts.
     """
     home = base / "hermes-home"
     (home / "plugins").mkdir(parents=True, exist_ok=True)
     (home / "state").mkdir(parents=True, exist_ok=True)
 
-    plugin_link = home / "plugins" / "web-router"
-    if plugin_link.is_symlink() or plugin_link.exists():
-        plugin_link.unlink() if plugin_link.is_symlink() else shutil.rmtree(plugin_link)
+    plugin_link = home / "plugins" / PLUGIN_NAME
+    if plugin_link.is_symlink():
+        plugin_link.unlink()
+    elif plugin_link.exists():
+        shutil.rmtree(plugin_link)
     plugin_link.symlink_to(REPO_ROOT / "hermes_plugin", target_is_directory=True)
 
     config = [
         "plugins:",
         "  enabled:",
-        "    - web-router",
+        f"    - {PLUGIN_NAME}",
         "web:",
-        "  search_backend: router",
-        "  extract_backend: router",
+        f"  search_backend: {PLUGIN_NAME}",
+        f"  extract_backend: {PLUGIN_NAME}",
         f"  keyless_rescue: {'true' if allow_keyless else 'false'}",
     ]
     (home / "config.yaml").write_text("\n".join(config) + "\n", encoding="utf-8")
 
     env_lines = [f"{name}={value}" for name, value in keys.items() if value]
     if not allow_keyless:
-        env_lines.append("ROUTER_KEYLESS_LAST_RESORT=false")
+        env_lines.append("QUOTAROUTER_KEYLESS_LAST_RESORT=false")
     if search_order:
-        env_lines.append(f"ROUTER_SEARCH_ORDER={search_order}")
+        env_lines.append(f"QUOTAROUTER_SEARCH_ORDER={search_order}")
     if extract_order:
-        env_lines.append(f"ROUTER_EXTRACT_ORDER={extract_order}")
+        env_lines.append(f"QUOTAROUTER_EXTRACT_ORDER={extract_order}")
     (home / ".env").write_text("\n".join(env_lines) + ("\n" if env_lines else ""), encoding="utf-8")
     return home
 
 
 def child_python() -> str:
-    """Интерпретатор Hermes: в нём есть httpx и сам пакет агента."""
+    """The Hermes interpreter: it has httpx and the agent package itself."""
     candidate = HERMES_ROOT / "venv" / "bin" / "python"
     return str(candidate) if candidate.exists() else sys.executable
 
 
 def run_child(home: Path, *, label: str, extra_env: Optional[dict[str, str]] = None,
               keys: Optional[dict[str, str]] = None) -> tuple[StepReport | None, dict[str, Any]]:
-    """Прогнать дочерний сценарий в изолированном home и разобрать его отчёт."""
+    """Run the child scenario in an isolated home and parse its report."""
     child = home / "e2e_child.py"
     child.write_text(CHILD_SOURCE, encoding="utf-8")
 
@@ -301,7 +304,7 @@ def run_child(home: Path, *, label: str, extra_env: Optional[dict[str, str]] = N
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/root"),
         "HERMES_HOME": str(home),
-        "ROUTER_STATE_DIR": str(home / "state" / "web-router"),
+        "QUOTAROUTER_STATE_DIR": str(home / "state" / PLUGIN_NAME),
         "E2E_HERMES_ROOT": str(HERMES_ROOT),
         "PYTHONPATH": str(HERMES_ROOT),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -315,20 +318,22 @@ def run_child(home: Path, *, label: str, extra_env: Optional[dict[str, str]] = N
     stdout = proc.stdout or ""
     if "===E2E-REPORT===" not in stdout:
         detail = (stdout[-800:] + "\n" + (proc.stderr or "")[-800:]).strip()
-        return StepReport(f"child[{label}]", False, elapsed, f"нет отчёта, код {proc.returncode}: {detail}"), {}
+        return StepReport(f"child[{label}]", False, elapsed,
+                          f"no report, exit code {proc.returncode}: {detail}"), {}
     payload = stdout.split("===E2E-REPORT===", 1)[1].strip().splitlines()[0]
     report = json.loads(payload)
     return StepReport(f"child[{label}]", bool(report.get("ok")), elapsed, None), report
 
 
 def live_state_fingerprint() -> str:
-    """Отпечаток состояния живого профиля: доказательство, что стенд его не тронул."""
+    """Fingerprint of the live profile: proof the stand did not touch it."""
     digest = hashlib.sha256()
     config = LIVE_HOME / "config.yaml"
     if config.exists():
         digest.update(config.read_bytes())
-    state_dir = LIVE_HOME / "state" / "web-router"
-    if state_dir.exists():
+    for state_dir in (LIVE_STATE, LIVE_HOME / "state" / PLUGIN_NAME):
+        if not state_dir.exists():
+            continue
         for path in sorted(state_dir.iterdir()):
             if path.is_file():
                 digest.update(path.name.encode())
@@ -338,37 +343,38 @@ def live_state_fingerprint() -> str:
 
 
 def run(live: bool = True, keep_home: bool = False, base_dir: Optional[Path] = None) -> RunReport:
-    """Полный прогон стенда. Возвращает отчёт; исключений не бросает."""
+    """Run the whole stand. Returns a report; never raises."""
     report = RunReport()
     if not (HERMES_ROOT / "tools" / "web_tools.py").exists():
-        report.add(StepReport("hermes_available", False, 0.0, f"нет установки Hermes в {HERMES_ROOT}"))
+        report.add(StepReport("hermes_available", False, 0.0, f"no Hermes installation in {HERMES_ROOT}"))
         return report
 
-    base = Path(base_dir) if base_dir else Path(tempfile.mkdtemp(prefix="web-router-e2e-"))
+    base = Path(base_dir) if base_dir else Path(tempfile.mkdtemp(prefix="quotarouter-e2e-"))
     report.home = str(base)
     before = live_state_fingerprint()
 
     try:
-        # --- 1. живой путь: плагин, поиск, вытяжка, учёт -------------------------------
+        # --- 1. the live path: plugin, search, extract, accounting --------------------
         if live:
             keys = vendor_keys()
             if not keys:
                 report.add(StepReport("vendor_keys", False, 0.0,
-                                      "ни одного ключа вендора в окружении — живой прогон невозможен"))
+                                      "no vendor key in the environment - a live run is impossible"))
             else:
                 home = build_home(base, keys=keys)
                 _, child = run_child(home, label="live", keys=keys, extra_env={
-                    # деградация проверяется отдельным стендом без ключей; здесь её шаг
-                    # неизбежно упал бы, потому что ключи есть
+                    # degradation has its own keyless stand; with keys present that step
+                    # would necessarily fail
                     "E2E_ONLY_STEP": "plugin_registry,search_tool,extract_tool,state_isolated",
                 })
                 for item in child.get("steps", []):
-                    report.add(StepReport(item["name"], item["ok"], item.get("seconds", 0.0), item.get("detail")))
+                    report.add(StepReport(item["name"], item["ok"], item.get("seconds", 0.0),
+                                          item.get("detail")))
                 if child.get("ok"):
                     report.spent["search"] += 1
                     report.spent["extract"] += 1
 
-        # --- 2. деградация: без ключей стенд обязан отказать честно -------------------
+        # --- 2. degradation: with no keys the stand must refuse honestly --------------
         degraded_base = base / "degraded"
         degraded_base.mkdir(parents=True, exist_ok=True)
         degraded_home = build_home(degraded_base, keys={}, allow_keyless=False)
@@ -378,26 +384,28 @@ def run(live: bool = True, keep_home: bool = False, base_dir: Optional[Path] = N
         names = [s["name"] for s in steps]
         degraded_ok = bool(child.get("ok")) and "search_degradation" in names
         report.add(StepReport(
-            "degradation_without_keys", degraded_ok,
-            0.0, next((s.get("detail") for s in steps if s["name"] == "search_degradation"), "шаг не выполнен")))
+            "degradation_without_keys", degraded_ok, 0.0,
+            next((s.get("detail") for s in steps if s["name"] == "search_degradation"),
+                 "the step did not run")))
     finally:
         after = live_state_fingerprint()
         report.add(StepReport(
             "isolation", before == after, 0.0,
-            "живой профиль не изменён" if before == after else "живой профиль ИЗМЕНИЛСЯ во время прогона"))
+            "the live profile is untouched" if before == after else "the live profile CHANGED during the run"))
         if not keep_home:
             shutil.rmtree(base, ignore_errors=True)
         else:
-            report.notes.append(f"каталог стенда сохранён: {base}")
+            report.notes.append(f"stand directory kept: {base}")
 
     return report
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="E2E-прогон плагина web-router внутри Hermes.")
-    parser.add_argument("--no-live", action="store_true", help="без вызовов вендоров (нулевая стоимость)")
-    parser.add_argument("--keep-home", action="store_true", help="не удалять каталог стенда")
-    parser.add_argument("--report", default=str(REPO_ROOT / "e2e-report.json"), help="куда писать отчёт")
+    parser = argparse.ArgumentParser(description="E2E run of the quotarouter plugin inside Hermes.")
+    parser.add_argument("--no-live", action="store_true", help="no vendor calls (zero cost)")
+    parser.add_argument("--keep-home", action="store_true", help="keep the stand directory")
+    parser.add_argument("--report", default=str(REPO_ROOT / "e2e-report.json"),
+                        help="where to write the report")
     args = parser.parse_args(argv)
 
     report = run(live=not args.no_live, keep_home=args.keep_home)
@@ -408,11 +416,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         mark = "OK  " if step.ok else "FAIL"
         detail = step.detail if isinstance(step.detail, str) else json.dumps(step.detail, ensure_ascii=False)
         print(f"{mark} {step.name} ({step.seconds}s) {detail or ''}")
-    print(f"\nотчёт: {path}")
-    print("ИТОГ:", "все шаги прошли" if report.ok else "есть упавшие шаги")
-    if not report.ok:
-        return 1
-    return 0
+    print(f"\nreport: {path}")
+    print("RESULT:", "all steps passed" if report.ok else "some steps failed")
+    return 0 if report.ok else 1
 
 
 if __name__ == "__main__":

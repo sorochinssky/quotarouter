@@ -104,7 +104,7 @@ class Router:
             stage.blocked_reason = ""  # type: ignore[attr-defined]
             probed = stage.probe_quota()
         except Exception as exc:  # a probe must never break a search
-            logger.debug("web-router: quota probe for %s failed: %s", stage.name, exc)
+            logger.debug("quotarouter: quota probe for %s failed: %s", stage.name, exc)
             return
         if probed is None:
             self._ensure_default_limit(stage)
@@ -233,7 +233,7 @@ class Router:
             if served is not None:
                 result.payload = served
                 result.stage = KEYLESS_NAME
-                logger.warning("web-router: every configured stage is out; %s served by the keyless tier", capability)
+                logger.warning("quotarouter: every configured stage is out; %s served by the keyless tier", capability)
                 return result
         return result
 
@@ -253,7 +253,7 @@ class Router:
         except Exception as exc:  # an adapter bug must not kill the whole call
             self._pause(stage, types.TRANSIENT, f"stage crashed: {exc}")
             result.attempts.append(RouteAttempt(stage.name, False, f"crashed: {exc}"))
-            logger.warning("web-router: stage %s crashed", stage.name, exc_info=True)
+            logger.warning("quotarouter: stage %s crashed", stage.name, exc_info=True)
             return None
 
         # An adapter may return a bare payload (extract list) or an Outcome (search envelope).
@@ -301,7 +301,7 @@ class Router:
             attempt = state.consecutive_failures + 1
             until = self.clock() + ledger_mod.backoff_seconds(kind, attempt, retry_after)
         self.ledger.pause(stage.name, until, kind, message)
-        logger.info("web-router: %s paused (%s) until %s — %s", stage.name, kind,
+        logger.info("quotarouter: %s paused (%s) until %s — %s", stage.name, kind,
                     ledger_mod.iso(until), message[:200])
 
     # --- reporting ---------------------------------------------------------------------
@@ -321,7 +321,7 @@ class Router:
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception as exc:
-            logger.debug("web-router: could not write route log: %s", exc)
+            logger.debug("quotarouter: could not write route log: %s", exc)
 
 
 _ORIGIN_ANSWER = (
@@ -357,4 +357,4 @@ def format_failure(result: RouteResult, capability: str) -> str:
     """The single error the model sees when nothing served."""
     parts = [a.as_line() for a in result.attempts]
     body = "; ".join(parts) if parts else "no stage configured"
-    return f"router: no {capability} provider served this call ({body})"
+    return f"quotarouter: no {capability} provider served this call ({body})"

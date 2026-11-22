@@ -12,13 +12,13 @@ import json
 import httpx
 import pytest
 
-from router import cli, config, types
-from router.provider import RouterProvider
-from tests.conftest import json_response
+from quotarouter import cli, config, types
+from quotarouter.integrations.hermes import RouterProvider
+from conftest import json_response
 
 
 def test_provider_registers_under_the_name_hermes_will_configure():
-    assert RouterProvider.name == "router"
+    assert RouterProvider.name == "quotarouter"
     provider = RouterProvider()
     assert provider.supports_search() and provider.supports_extract()
 
@@ -29,7 +29,7 @@ def test_is_available_is_offline_and_true_with_a_key(keys, monkeypatch):
     def explode(request):  # noqa: ARG001
         raise AssertionError("is_available() must not open a socket")
 
-    from router import http_client
+    from quotarouter import http_client
 
     http_client.set_transport(httpx.MockTransport(explode))
     assert RouterProvider().is_available() is True
@@ -45,7 +45,7 @@ def test_is_available_false_without_any_path(keys, monkeypatch):
     config.reset_settings_for_tests()
 
     provider = RouterProvider()
-    from router.stages import KeylessStage, JinaStage
+    from quotarouter.stages import KeylessStage, JinaStage
 
     for name, stage in list(provider.router.stages.items()):
         if isinstance(stage, (KeylessStage, JinaStage)):
@@ -63,7 +63,7 @@ def test_search_payload_matches_the_hermes_envelope(keys, monkeypatch, use_trans
     payload = RouterProvider().search("q", 3)
     assert payload["success"] is True
     assert set(payload["data"]) >= {"web", "backend"}
-    assert payload["data"]["backend"] == "router:exa"
+    assert payload["data"]["backend"] == "quotarouter:exa"
     row = payload["data"]["web"][0]
     assert list(row) == ["title", "url", "description", "position"], "key order is part of the wire contract"
     assert isinstance(row["position"], int)
@@ -144,7 +144,7 @@ def test_cli_status_json_shape(capsys):
 
 def test_cli_disable_then_enable_persists(capsys, tmp_path):
     assert cli.main(["disable", "exa", "--reason", "test"]) == 0
-    from router import ledger as L
+    from quotarouter import ledger as L
 
     assert L.Ledger(config.settings(refresh=True).ledger_path).get("exa").pause_kind == "disabled"
     assert cli.main(["enable", "exa"]) == 0

@@ -1,10 +1,10 @@
-"""`router probe`: ask every vendor what it has left and write it into the ledger.
+"""`quotarouter` CLI: status, quota probe, which stage would serve, and a live selftest.
 
 This is the one command an operator runs to make the router *quota-aware* instead of
 reactive: it fills `remaining` from the vendor's own accounting API, so the next search
 already knows whether the free pool is alive. It is also what a cron job should call —
 
-    17 */6 * * *  /root/.hermes/venv/bin/python -m router.cli probe --quiet
+    17 */6 * * *  python3 -m quotarouter.cli probe --quiet
 
 Run it before a release too: a vendor that changes its usage endpoint shows up here.
 """
@@ -17,7 +17,7 @@ import sys
 from typing import Optional
 
 from . import config, ledger as ledger_mod
-from .provider import get_router
+from .integrations.hermes import get_router
 
 
 def _fmt_int(value: float) -> str:
@@ -146,6 +146,13 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_serve_mcp(args: argparse.Namespace) -> int:
+    """MCP stdio: line-delimited JSON-RPC 2.0 on stdin/stdout. Nothing else is printed."""
+    from .integrations.mcp import serve_stdio
+
+    return serve_stdio()
+
+
 def _pause(state: ledger_mod.VendorState, now: float) -> str:
     if not state.is_paused(now):
         return "-"
@@ -166,8 +173,8 @@ def _iso(ts: Optional[float]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="router",
-        description="Quota-aware web search/extract router for Hermes Agent.",
+        prog="quotarouter",
+        description="Quota-aware web search/extract router: spend free allowances first.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -194,6 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
     reset = sub.add_parser("reset", help="clear the local accounting for a vendor")
     reset.add_argument("vendor")
     reset.set_defaults(func=cmd_reset)
+
+    serve = sub.add_parser("serve-mcp", help="run as an MCP stdio server (for any MCP client)")
+    serve.set_defaults(func=cmd_serve_mcp)
 
     selftest = sub.add_parser("selftest", help="run one search and one extract end-to-end")
     selftest.add_argument("--query", default="Nous Research Hermes Agent")

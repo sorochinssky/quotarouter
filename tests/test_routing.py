@@ -7,8 +7,8 @@ import json
 import httpx
 import pytest
 
-from router import config, ledger as L, routing, types
-from tests.conftest import json_response, text_response
+from quotarouter import config, ledger as L, routing, types
+from conftest import json_response, text_response
 
 FIRE = "api.firecrawl.dev"
 EXA = "api.exa.ai"
@@ -37,7 +37,7 @@ def build(handler, monkeypatch, *, order: str, keys: dict[str, str]):
     monkeypatch.setenv("ROUTER_SEARCH_ORDER", order)
     monkeypatch.setenv("ROUTER_EXTRACT_ORDER", order)
     config.reset_settings_for_tests()
-    from router import http_client
+    from quotarouter import http_client
 
     http_client.set_transport(httpx.MockTransport(handler))
     return routing.Router()

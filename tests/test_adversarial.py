@@ -12,8 +12,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from router import config, http_client, routing, types
-from tests.conftest import json_response, text_response
+from quotarouter import config, http_client, routing, types
+from conftest import json_response, text_response
 
 FIX = Path(__file__).parent / "fixtures"
 

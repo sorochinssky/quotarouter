@@ -1,41 +1,42 @@
-# E2E-проверка плагина в настоящем Hermes
+# E2E verification of the plugin in a real Hermes
 
 ## Why
 
-Сейчас доказано, что работает **ядро роутера**: 78 офлайн-тестов на `httpx.MockTransport` и
-4 живых теста адаптеров. Не доказано главное для эксплуатации: что Hermes действитely
-подхватывает плагин, отдаёт через него `web_search`/`web_extract` модели и что учёт квот
-пишется в правильное место. Между «адаптер отвечает» и «инструмент у агента отвечает»
-лежат загрузчик плагинов, реестр провайдеров, конверт ответа тула и конфиг — любая из этих
-четырёх частей может молча не сработать.
+What was proven so far is the **core** of the router: 78 offline tests on
+`httpx.MockTransport` and 4 live adapter tests. What was not proven is the operational part:
+that Hermes actually picks the plugin up, serves `web_search` / `web_extract` through it, and
+writes quota accounting to the right place. Four things sit between "the adapter answers" and
+"the tool answers the agent" — the plugin loader, the provider registry, the tool response
+envelope and the config — and any of the four can fail silently.
 
-Нужен сквозной прогон по настоящему пути вызова, с настоящими вендорами, в изолированном
-профиле, чтобы проверка не стоила живому агенту ни квоты, ни испорченного состояния.
+The repository needs an end-to-end run over the real call path, with real vendors, in an
+isolated profile, so the check costs the live agent neither quota nor corrupted state.
 
 ## What Changes
 
-- Новый уровень тестов `tests/e2e/`: прогон `web_search_tool` / `web_extract_tool` из
-  Hermes с бэкендом `router`, в изолированном `HERMES_HOME`, с отчётом в JSON и кодом
-  возврата.
-- Сценарий деградации: пустые ключи → инструмент возвращает честную ошибку с причинами
-  по каждой ступени, без трейсбека.
-- Доказательство изоляции: ledger и журнал маршрутов появляются под изолированным
-  `HERMES_HOME`, а не в живом профиле.
-- `docs/testing.md` — лестница тестов: что проверяет каждый уровень, что стоит квоты,
-  что считается доказательством, как запускать.
-- В `pyproject.toml` — маркер `e2e`, по умолчанию не бежит.
+- A new test level `tests/e2e/`: a run of `web_search_tool` / `web_extract_tool` from Hermes
+  with the `quotarouter` backend, in an isolated `HERMES_HOME`, with a JSON report and an
+  exit code.
+- A degradation scenario: empty keys → the tool returns an honest error naming every stage,
+  with no traceback.
+- Proof of isolation: the ledger and the route log appear under the isolated `HERMES_HOME`,
+  not in the live profile.
+- `docs/testing.md` — the ladder of test levels: what each level checks, what it costs in
+  quota, what counts as evidence, how to run it.
+- `pyproject.toml` gains the `e2e` marker; it does not run by default.
 
-## Вне этого изменения
+## Out of scope
 
-- Установка плагина в живой профиль и переключение `web.search_backend` на `router` —
-  отдельное действие оператора (нужен рестарт gateway).
-- Кроны, алерты, мониторинг расхода квот.
-- Проверка под нагрузкой и параллельных вызовов.
+- Installing the plugin into the live profile and switching `web.search_backend` to
+  `quotarouter` — a separate operator action (it needs a gateway restart).
+- Cron jobs, alerts, quota-spend monitoring.
+- Load testing and concurrent calls.
 
 ## Impact
 
-- Затронутые файлы: `pyproject.toml`, новый `tests/e2e/`, новый `docs/testing.md`, README
-  (раздел про тесты).
-- Риск прод-квоты: e2e тратит 1 поиск + 1 страницу за прогон; маркер `live`/`e2e`
-  исключает его из обычного `pytest`.
-- Риск живого профиля: нулевой — изоляция через `HERMES_HOME` и проверяется отдельным шагом.
+- Files touched: `pyproject.toml`, new `tests/e2e/`, new `docs/testing.md`, README (the
+  testing section).
+- Production quota risk: an e2e run spends 1 search + 1 page; the `live`/`e2e` markers keep
+  it out of a plain `pytest`.
+- Live profile risk: zero — isolation is done through `HERMES_HOME` and is checked by a
+  dedicated step.

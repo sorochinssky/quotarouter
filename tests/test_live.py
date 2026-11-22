@@ -15,10 +15,10 @@ import os
 
 import pytest
 
-from router import config, http_client, routing
-from router.stages.exa import ExaStage
-from router.stages.firecrawl import FirecrawlStage
-from router.stages.jina import looks_like_stub
+from quotarouter import config, http_client, routing
+from quotarouter.stages.exa import ExaStage
+from quotarouter.stages.firecrawl import FirecrawlStage
+from quotarouter.stages.jina import looks_like_stub
 
 pytestmark = pytest.mark.live
 
@@ -60,14 +60,14 @@ def test_jina_live_reader_returns_real_text():
     text = live_env("ROUTER_LIVE_URL") if "ROUTER_LIVE_URL" in os.environ else "https://example.com/"
     results = routing.Router().run_extract([text]).payload
     assert results and results[0]["content"], results
-    # Порог берём из настроек, а не константой: example.com — легально короткая страница,
-    # и «заглушка» здесь означала бы только пустую оболочку.
+    # The threshold comes from the settings, not a constant: example.com is legally short,
+    # and calling it a stub here would mean nothing but an empty shell.
     assert not looks_like_stub(results[0]["content"], config.settings(refresh=True).min_page_chars)
 
 
 def test_deepseek_live_balance_is_readable():
     live_env("DEEPSEEK_API_KEY")
-    from router.stages.deepseek import DeepSeekStage
+    from quotarouter.stages.deepseek import DeepSeekStage
 
     stage = DeepSeekStage()
     probed = stage.probe_quota()

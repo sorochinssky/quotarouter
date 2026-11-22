@@ -1,162 +1,167 @@
-# Как тестируется web-router
+# How quotarouter is tested
 
-Пять уровней. Каждый отвечает на свой вопрос и платит свою цену. Запускать снизу вверх:
-уровень 1–3 бесплатны и быстрые, 4–5 тратят квоту вендоров и требуют установленного Hermes.
+Five levels. Each answers its own question and pays its own price. Run them bottom-up:
+levels 1–3 are free and fast, levels 4–5 spend vendor quota and need an installed Hermes.
 
 ```
-1. Контракты и учёт          pytest -q             0 сек, 0 ₽    всегда
-2. Адаптеры на моках         pytest -q             1 сек, 0 ₽    всегда
-3. Записанные ответы + злые  pytest -q             1 сек, 0 ₽    всегда
-4. Живые вендоры             pytest -m live -q     3 сек, ~$0.01 перед релизом
-5. Сквозной прогон в Hermes  pytest -m e2e -q     15 сек, ~$0.01 перед релизом и после
-                                                                любого изменения шима/конфига
+1. Contracts and accounting     pytest -q             0 s, $0      always
+2. Adapters on mocks            pytest -q             1 s, $0      always
+3. Recorded + hostile responses pytest -q             1 s, $0      always
+4. Live vendors                 pytest -m live -q     3 s, ~$0.01  before a release
+5. End-to-end in real Hermes    pytest -m e2e -q     15 s, ~$0.01  before a release and
+                                                                  after any change to the
+                                                                  shim, the manifest or config
 ```
 
-## Уровень 1 — контракты и учёт (`tests/test_errors.py`, `tests/test_ledger.py`)
+## Level 1 — contracts and accounting (`tests/test_errors.py`, `tests/test_ledger.py`)
 
-**Что доказывает:** ответы вендоров классифицируются правильно (402 → квота, 401 → ключ,
-429 → троттлинг, 5xx → временная ошибка), а ledger правильно считает остаток, роллит окно
-и снимает паузу.
+**What it proves:** vendor responses are classified correctly (402 → quota, 401 → auth,
+429 → throttle, 5xx → transient), and the ledger computes the remainder, rolls the window and
+lifts a pause correctly.
 
-**Стоимость:** ноль.
+**Cost:** zero.
 
-**Форма:** таблицы параметров. Каждая строка — реальный ответ вендора и ожидаемый код.
-Добавили вендора или увидели новый код ошибки — добавили строку, а не новый тест-файл.
+**Shape:** parameter tables. Each row is a real vendor response with its expected kind. A new
+vendor or a new error code adds a row, not a new test file.
 
-## Уровень 2 — адаптеры и цепь на моках (`tests/test_stages.py`, `tests/test_routing.py`)
+## Level 2 — adapters and the chain on mocks (`tests/test_stages.py`, `tests/test_routing.py`)
 
-**Что доказывает:** адаптер превращает ответ вендора в конверт Hermes; цепь идёт по
-порядку, паркует упавшую ступень и **не дёргает вторую, если первая справилась**.
+**What it proves:** an adapter turns a vendor response into the Hermes envelope; the chain
+walks the order, parks a failed stage, and **does not touch the second stage when the first
+one succeeded**.
 
-**Стоимость:** ноль — `httpx.MockTransport` подменяет единственную точку сети
-(`router/http_client.py`).
+**Cost:** zero — `httpx.MockTransport` replaces the single network entry point
+(`quotarouter/http_client.py`).
 
-**Что не доказывает:** что вендор действительно так отвечает. Поэтому есть уровень 3.
+**What it does not prove:** that the vendor actually answers that way. Hence level 3.
 
-## Уровень 3 — записанные ответы и злые случаи (`tests/test_adversarial.py`, `tests/fixtures/`)
+## Level 3 — recorded and hostile responses (`tests/test_adversarial.py`, `tests/fixtures/`)
 
-**Что доказывает:** цепь выживает на настоящих телах ответов (сняты с прода 2026-11-22) и
-на враждебных: `{"success": true, "data": {"web": []}}`, HTTP 200 с телом ошибки, обрыв
-соединения, смена схемы ответа, `403 from origin` (это ответ сайта, а не сбой вендора —
-цепь не должна тратить кредиты следующей ступени).
+**What it proves:** the chain survives real response bodies (captured from production on
+2026-11-22) and hostile ones: `{"success": true, "data": {"web": []}}`, HTTP 200 carrying an
+error body, a dropped connection, a changed response schema, `403 from origin` (the website
+answering, not the vendor failing — the chain must not spend the next stage's credits).
 
-**Стоимость:** ноль.
+**Cost:** zero.
 
-**Как пополнять фикстуры:** `tests/fixtures/` — урезанные настоящие ответы. Сняли новый
-ответ руками — положили файл и дописали сценарий. Если вендор сменил схему, здесь это
-видно как падение, а не как пустая выдача в проде.
+**How to extend the fixtures:** `tests/fixtures/` holds trimmed real responses. Capture a new
+response by hand, add the file, add a scenario. If a vendor changes its schema, it shows up
+here as a failure instead of as an empty result in production.
 
-## Уровень 4 — живые вендоры (`tests/test_live.py`)
+## Level 4 — live vendors (`tests/test_live.py`, `tests/test_mcp_integration.py`)
 
-**Что доказывает:** ключи живые, эндпоинты и цены не изменились, `credit-usage` Firecrawl
-разбирается, баланс DeepSeek читается, Jina отдаёт текст.
+**What it proves:** the keys are alive, endpoints and prices have not moved, Firecrawl's
+`credit-usage` parses, the DeepSeek balance reads, Jina returns text, and the MCP server
+answers `initialize` / `tools/list` / `tools/call` in a real subprocess.
 
-**Стоимость:** один поиск Exa (~$0.007), один вызов `credit-usage` (бесплатно), одна
-страница Jina (бесплатно), один `balance` DeepSeek (бесплатно).
+**Cost:** one Exa search (~$0.007), one `credit-usage` call (free), one Jina page (free), one
+DeepSeek `balance` (free). The MCP tests cost nothing — they never leave the ledger.
 
 ```bash
-set -a && . /root/.hermes/.env && set +a
-python -m pytest -m live -q -rA
+set -a && . ~/.hermes/.env && set +a
+python3 -m pytest -m live -q -rA
 ```
 
-**Правило:** `live`-тесты не мокают сеть намеренно. Если вендор недоступен, тест падает —
-это и есть сигнал.
+**Rule:** `live` tests deliberately do not mock the network. If a vendor is unreachable, the
+test fails — that is the signal.
 
-**Осторожно:** e2e-тесты помечены и `e2e`, и `live` (они тоже ходят в сеть), поэтому
-`pytest -m live` прогоняет и их. Только живые адаптеры, без стенда — `pytest -m "live and not e2e"`.
+**Careful:** the e2e tests are marked `e2e` *and* `live` (they hit the network too), so
+`pytest -m live` runs them as well. Live adapters only, without the stand:
+`pytest -m "live and not e2e"`.
 
-## Уровень 5 — сквозной прогон в настоящем Hermes (`tests/e2e/`)
+## Level 5 — end-to-end in a real Hermes (`tests/e2e/`)
 
-**Что доказывает:** Hermes действительно подхватывает плагин и отдаёт результат **модели**.
-Между «адаптер ответил» и «агент получил» стоят четыре вещи, каждая ломается отдельно:
+**What it proves:** Hermes really picks the plugin up and hands the result to the **model**.
+Four things sit between "the adapter answered" and "the agent got it", and each fails on its
+own:
 
-1. загрузчик плагинов (нашёл ли каталог, включён ли в `plugins.enabled`);
-2. реестр провайдеров — **отказывает** любому провайдеру, который не наследует
-   `agent.web_search_provider.WebSearchProvider`; без базового класса плагин грузится и
-   регистрирует пустоту;
-3. конверт ответа тула (`success`, `data.web[]`, `backend`);
-4. чтение конфига (`web.search_backend: router`).
+1. the plugin loader (was the directory found, is it in `plugins.enabled`);
+2. the provider registry — it **refuses** any provider that does not inherit
+   `agent.web_search_provider.WebSearchProvider`; without the base class the plugin loads and
+   registers nothing;
+3. the tool response envelope (`success`, `data.web[]`, `backend`);
+4. config reading (`web.search_backend: quotarouter`).
 
-**Стоимость:** 1 поиск + 1 страница. За прогон печатается, сколько потрачено.
+**Cost:** 1 search + 1 page. The run prints what it spent.
 
-### Как устроен стенд
+### How the stand is built
 
-`tests/e2e/harness.py` собирает временный `HERMES_HOME`:
+`tests/e2e/harness.py` assembles a temporary `HERMES_HOME`:
 
 ```
-<tmp>/hermes-home/config.yaml              plugins.enabled: [web-router], web.*_backend: router
-<tmp>/hermes-home/.env                     ключи вендоров (из окружения прогона)
-<tmp>/hermes-home/plugins/web-router -> …  симлинк на hermes_plugin/ репозитория
-<tmp>/hermes-home/state/web-router/        ledger.json + routes.jsonl этого прогона
+<tmp>/hermes-home/config.yaml              plugins.enabled: [quotarouter], web.*_backend: quotarouter
+<tmp>/hermes-home/.env                     vendor keys (taken from the run's environment)
+<tmp>/hermes-home/plugins/quotarouter -> … symlink to the repository's hermes_plugin/
+<tmp>/hermes-home/state/quotarouter/       this run's ledger.json + routes.jsonl
 ```
 
-Дочерний процесс запускается с `HERMES_HOME=<tmp>` и `PYTHONPATH=/usr/local/lib/hermes-agent`.
-Изоляция не на словах: шаг `isolation` сравнивает отпечаток живого `~/.hermes` (конфиг +
-state) до и после и падает, если что-то изменилось.
+The child process starts with `HERMES_HOME=<tmp>` and `PYTHONPATH=/usr/local/lib/hermes-agent`.
+Isolation is not a claim: the `isolation` step fingerprints the live `~/.hermes` (config +
+state) before and after, and fails if anything moved.
 
-Плагин подключён симлинком, а не копией: стенд обязан проверять тот код, что лежит в
-репозитории.
+The plugin is symlinked, never copied: the stand must exercise the code that lives in this
+repository.
 
-### Шаги прогона
+### Run steps
 
-| Шаг | Что проверяет |
+| Step | What it checks |
 |---|---|
-| `plugin_registry` | плагин найден, включён, `get_provider("router")` отдаёт объект |
-| `search_tool` | `web_search_tool` → `success: true`, ≥1 результат, `backend` = `router:<ступень>` |
-| `extract_tool` | `web_extract_tool` → непустой `content` |
-| `state_isolated` | `routes.jsonl` и `ledger.json` появились под изолированным home, в журнале есть `served_by` |
-| `degradation_without_keys` | без ключей и без keyless-резерва инструмент отдаёт `success: false` с причинами по ступеням, без трейсбека |
-| `isolation` | живой профиль не изменился |
+| `plugin_registry` | the plugin is found, enabled, and `get_provider("quotarouter")` returns an object |
+| `search_tool` | `web_search_tool` → `success: true`, ≥1 result, `backend` = `quotarouter:<stage>` |
+| `extract_tool` | `web_extract_tool` → non-empty `content` |
+| `state_isolated` | `routes.jsonl` and `ledger.json` appear under the isolated home, and the log carries `served_by` |
+| `degradation_without_keys` | with no keys and no keyless fallback the tool returns `success: false` with a per-stage reason, not a traceback |
+| `isolation` | the live profile did not change |
 
-### Команды
+### Commands
 
 ```bash
-# полный прогон, отчёт в e2e-report.json, код 0 только если все шаги прошли
-set -a && . /root/.hermes/.env && set +a
-python tests/e2e/harness.py
+# full run, report in e2e-report.json, exit 0 only if every step passed
+set -a && . ~/.hermes/.env && set +a
+python3 tests/e2e/harness.py
 
-# без вызовов вендоров (нулевая стоимость): деградация + изоляция + реестр
-python tests/e2e/harness.py --no-live
+# no vendor calls (zero cost): registry, degradation, isolation
+python3 tests/e2e/harness.py --no-live
 
-# оставить каталог стенда для разбора ledger.json / routes.jsonl
-python tests/e2e/harness.py --keep-home
+# keep the stand directory to inspect ledger.json / routes.jsonl
+python3 tests/e2e/harness.py --keep-home
 
-# то же через pytest (маркеры e2e+live, из обычного прогона исключены)
-python -m pytest -m e2e -q
+# the same through pytest (marked e2e+live, excluded from a plain run)
+python3 -m pytest -m e2e -q
 ```
 
-Переменные: `HERMES_ROOT` (по умолчанию `/usr/local/lib/hermes-agent`),
-`HERMES_LIVE_HOME` (по умолчанию `~/.hermes`), `E2E_QUERY`, `E2E_URL`,
-`ROUTER_E2E_CHILD_TIMEOUT` (180 с).
+Variables: `HERMES_ROOT` (default `/usr/local/lib/hermes-agent`), `HERMES_LIVE_HOME`
+(default `~/.hermes`), `E2E_QUERY`, `E2E_URL`, `QUOTAROUTER_E2E_CHILD_TIMEOUT` (180 s),
+`QUOTAROUTER_LIVE_STATE` (default `~/.local/state/quotarouter`).
 
-### Отчёт
+### Report
 
-`e2e-report.json` в корне репозитория: `ok`, `home`, `spent`, `notes`, `steps[]` с
-`name/ok/seconds/detail`. Это единственная улика, что прогон был — прикладывать к релизу и
-к разбору инцидента.
+`e2e-report.json` in the repository root: `ok`, `home`, `spent`, `notes`, `steps[]` with
+`name/ok/seconds/detail`. It is the only evidence that the run happened — attach it to a
+release and to any incident review.
 
-### Когда обязательно гонять e2e
+### When an e2e run is mandatory
 
-- изменился `hermes_plugin/` (шим, `plugin.yaml`) или `router/provider.py`;
-- менялся `web.search_backend` / `web.extract_backend` / `plugins.enabled`;
-- обновился сам Hermes (`hermes --version` изменилась) — контракт провайдера мог поехать;
-- перед установкой плагина в живой профиль.
+- `hermes_plugin/` (the shim, `plugin.yaml`) or `quotarouter/integrations/hermes.py` changed;
+- `web.search_backend` / `web.extract_backend` / `plugins.enabled` changed;
+- Hermes itself was upgraded (`hermes --version` moved) — the provider contract may have moved;
+- before installing the plugin into a live profile.
 
-## Что этими уровнями не проверяется
+## What these levels do not cover
 
-- Поведение под нагрузкой и параллельные вызовы (лимиты вендоров по QPS).
-- Долгая жизнь ledger'а: реальный переход окна 30-го числа проверен только на подставных
-  часах (`test_ledger.py`).
-- Работа через `delegate_task` и субагентов — там свой путь инициализации плагинов.
-- Поведение живой модели (какие запросы она формулирует) — это не про плагин.
+- Load behaviour and concurrent calls (vendor QPS limits).
+- Long-term ledger life: the real window roll-over on the 30th is only tested on a fake clock
+  (`test_ledger.py`).
+- Work through `delegate_task` and subagents — that path initialises plugins differently.
+- The live model's behaviour (what queries it writes) — that is not about the plugin.
 
-## Разбор упавшего шага
+## Debugging a failed step
 
-1. `FAIL plugin_registry` → каталог плагина не найден или не включён: проверить
-   `plugins.enabled` и что `hermes_plugin/router` — симлинк, а не пустой каталог.
-2. `FAIL search_tool` с `success: false` → читать текст ошибки: там перечислены все ступени
-   и причина пропуска каждой (`no EXA_API_KEY set`, `quota spent 10/10 usd`, …).
-3. `FAIL extract_tool` → открыть `<home>/state/web-router/routes.jsonl`, там строка chain с
-   причиной по каждой ступени.
-4. `FAIL isolation` → стенд писал в живой профиль; это баг стенда, а не плагина, и его
-   нельзя игнорировать: следующий прогон испортит боевые счётчики.
+1. `FAIL plugin_registry` → the plugin directory was not found or not enabled: check
+   `plugins.enabled`, and that `hermes_plugin/quotarouter` is a symlink, not an empty directory.
+2. `FAIL search_tool` with `success: false` → read the error: it lists every stage with the
+   reason it was skipped (`no EXA_API_KEY set`, `quota spent 10/10 usd`, …).
+3. `FAIL extract_tool` → open `<home>/state/quotarouter/routes.jsonl`; the chain line carries
+   a reason per stage.
+4. `FAIL isolation` → the stand wrote into the live profile. That is a stand bug, not a plugin
+   bug, and it must not be ignored: the next run will corrupt production counters.

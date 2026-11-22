@@ -111,7 +111,7 @@ class Ledger:
                 vendors = raw.get("vendors", {})
                 self._state = {name: _state_from_dict(name, data) for name, data in vendors.items()}
             except Exception as exc:  # a corrupted ledger must never break search
-                logger.warning("web-router: ledger %s unreadable (%s); starting fresh", self.path, exc)
+                logger.warning("quotarouter: ledger %s unreadable (%s); starting fresh", self.path, exc)
                 self._state = {}
 
     def _save(self) -> None:

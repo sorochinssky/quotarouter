@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from router import config, http_client  # noqa: E402
+from quotarouter import config, env_source, http_client  # noqa: E402
 
 
 _VENDOR_VARS = ("EXA_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY", "KEENABLE_API_KEY",
@@ -35,6 +35,10 @@ def isolated_env(request, tmp_path, monkeypatch):
     live run must never touch the production ledger.
     """
     monkeypatch.setenv("ROUTER_STATE_DIR", str(tmp_path / "state"))
+    # A host integration registers a key resolver at import time (Hermes reads the profile's
+    # .env). A unit test must not inherit the operator's real keys through it.
+    saved_resolvers = env_source.registered_resolvers()
+    env_source.clear_resolvers()
     if request.node.get_closest_marker("live") is not None:
         for var in ("ROUTER_SEARCH_ORDER", "ROUTER_EXTRACT_ORDER"):
             monkeypatch.delenv(var, raising=False)
@@ -44,6 +48,7 @@ def isolated_env(request, tmp_path, monkeypatch):
     config.reset_settings_for_tests()
     yield
     http_client.set_transport(None)
+    env_source.set_resolvers(saved_resolvers)
     config.reset_settings_for_tests()
 
 

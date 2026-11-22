@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from .. import errors, types
+from .. import env_source, errors, types
 from ..types import Outcome
 
 
@@ -61,15 +61,11 @@ class Stage:
 
     @staticmethod
     def _env(name: str) -> str:
-        """Hermes-aware env lookup: os.environ, then the active profile's .env."""
-        try:
-            from agent.web_search_provider import get_provider_env  # type: ignore[import-not-found]
+        """Key lookup through `env_source`: os.environ, an optional dotenv, host resolvers.
 
-            return get_provider_env(name)
-        except Exception:
-            import os
-
-            return (os.environ.get(name, "") or "").strip()
+        The core never imports a host: an integration registers its own resolver instead.
+        """
+        return env_source.resolve(name)
 
     def describe(self) -> str:
         return f"{self.display_name or self.name} ({self.name})"

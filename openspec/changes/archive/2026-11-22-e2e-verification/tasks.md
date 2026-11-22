@@ -1,38 +1,37 @@
-# Tasks: e2e-проверка в настоящем Hermes
+# Tasks: e2e verification in a real Hermes
 
-## 1. Стенд
+## 1. The stand
 
-- [x] 1.1 `tests/e2e/harness.py`: собирает временный `HERMES_HOME` (config.yaml, .env,
-  plugins/web-router с симлинком на пакет). Проверка: каталог существует, `config.yaml`
-  содержит `search_backend: router`.
-- [x] 1.2 Дочерний скрипт-раннер: шаги 1–5 выполняются в отдельном процессе с
-  `HERMES_HOME=<temp>` и `PYTHONPATH=/usr/local/lib/hermes-agent`. Проверка: шаг 1 видит
-  провайдера `router` в реестре Hermes.
-- [x] 1.3 Шаг изоляции: `~/.hermes/state/web-router` не создаётся живым вызовом. Проверка:
-  до/после прогона mtime живого каталога не меняется (или каталога нет).
+- [x] 1.1 `tests/e2e/harness.py` builds a temporary `HERMES_HOME` (config.yaml, .env,
+  plugins/quotarouter with a symlink to the package). Check: the directory exists and
+  `config.yaml` contains `search_backend: quotarouter`.
+- [x] 1.2 A child runner executes steps 1–5 in a separate process with `HERMES_HOME=<temp>` and
+  `PYTHONPATH=/usr/local/lib/hermes-agent`. Check: step 1 sees the `quotarouter` provider in
+  the Hermes registry.
+- [x] 1.3 An isolation step: `~/.local/state/quotarouter` is not created by the live call.
+  Check: the fingerprint of the live profile is identical before and after the run.
 
-## 2. Сценарии
+## 2. Scenarios
 
-- [x] 2.1 `search_tool`: `success: true`, ≥1 результат, `data.backend` = `router:<name>`.
-- [x] 2.2 `extract_tool`: `results[0].content` непустой.
-- [x] 2.3 Учёт: `ledger.json` и `routes.jsonl` появились под изолированным home, в журнале
-  есть `served_by`.
-- [x] 2.4 Деградация: без ключей и с `ROUTER_KEYLESS_LAST_RESORT=false` инструмент отдаёт
-  `success: false` с именами ступеней, без трейсбека.
+- [x] 2.1 `search_tool`: `success: true`, ≥1 result, `data.backend` = `quotarouter:<name>`.
+- [x] 2.2 `extract_tool`: `results[0].content` is non-empty.
+- [x] 2.3 Accounting: `ledger.json` and `routes.jsonl` appear under the isolated home, and the
+  log carries `served_by`.
+- [x] 2.4 Degradation: without keys and with `QUOTAROUTER_KEYLESS_LAST_RESORT=false` the tool
+  returns `success: false` naming the stages, with no traceback.
 
-## 3. Документация
+## 3. Documentation
 
-- [x] 3.1 `docs/testing.md`: лестница уровней (unit / mock-цепь / записанные ответы /
-  live-адаптеры / e2e), для каждого — что проверяет, чем платит, что считается
-  доказательством, команда запуска.
-- [x] 3.2 README: раздел «Тестирование» ссылается на `docs/testing.md`, добавлены команды
-  e2e.
+- [x] 3.1 `docs/testing.md`: the ladder of levels (unit / mocked chain / recorded responses /
+  live adapters / e2e), each with what it checks, what it costs, what counts as evidence and
+  the command that runs it.
+- [x] 3.2 README: the testing section links to `docs/testing.md` and lists the e2e commands.
 
-## 4. Гейты
+## 4. Gates
 
-- [x] 4.1 `pyproject.toml`: маркеры `e2e`, оба (`live`, `e2e`) исключены из `addopts`;
-  `pytest -q` остаётся офлайн и зелёным.
-- [x] 4.2 `pytest -q` → 78+ passed, ни одного сетевого вызова.
-- [x] 4.3 `python -m pytest -m e2e -q` → прогон стенда, отчёт `e2e-report.json`, код 0.
-- [x] 4.4 Прогон e2e на живых ключах: поиск и вытяжка обслужены реальными вендорами,
-  отчёт приложен в задаче/событии.
+- [x] 4.1 `pyproject.toml`: the `e2e` marker, and both (`live`, `e2e`) excluded from `addopts`;
+  `pytest -q` stays offline and green.
+- [x] 4.2 `pytest -q` → every test passes, no network call.
+- [x] 4.3 `python3 -m pytest -m e2e -q` → the stand runs, `e2e-report.json` is written, exit 0.
+- [x] 4.4 An e2e run on live keys: search and extract served by real vendors, report attached
+  to the task and the event log.

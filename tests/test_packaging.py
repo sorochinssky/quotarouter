@@ -1,0 +1,184 @@
+"""Configuration sources, and the packaging rules that keep the package host-agnostic.
+
+Two kinds of check live here:
+
+1. `Settings` reads `QUOTAROUTER_*` first and the legacy `ROUTER_*` second, so a rename never
+   forces a synchronised restart.
+2. The core imports no host framework, and no tracked artifact carries Cyrillic — the two
+   rules that make the repository publishable and the package reusable.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from quotarouter import config
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CORE_ROOT = REPO_ROOT / "quotarouter"
+# modules a host owns: the core must never reach into them
+FORBIDDEN_ROOTS = ("agent", "hermes_cli", "tools", "hermes_plugins")
+CYRILLIC = re.compile(r"[\u0400-\u04FF]")
+TEXT_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".toml", ".txt", ".json", ".cfg", ".ini"}
+
+
+@pytest.fixture(autouse=True)
+def clean_settings(monkeypatch):
+    """Every test starts from an environment with no router variables at all."""
+    for key in list(__import__("os").environ):
+        if key.startswith("QUOTAROUTER_") or key.startswith("ROUTER_"):
+            monkeypatch.delenv(key, raising=False)
+    config.reset_settings_for_tests()
+    yield
+    config.reset_settings_for_tests()
+
+
+def test_defaults_apply_when_nothing_is_set():
+    settings = config.settings(refresh=True)
+    assert settings.search_order == config.DEFAULT_SEARCH_ORDER
+    assert settings.extract_order == config.DEFAULT_EXTRACT_ORDER
+    assert settings.min_page_chars == 40
+    assert settings.ledger_path.name == "ledger.json"
+
+
+def test_new_prefix_reorders_the_chain(monkeypatch):
+    monkeypatch.setenv("QUOTAROUTER_SEARCH_ORDER", "exa, firecrawl ,deepseek")
+    assert config.settings(refresh=True).search_order == ("exa", "firecrawl", "deepseek")
+
+
+def test_legacy_prefix_still_works(monkeypatch):
+    monkeypatch.setenv("ROUTER_SEARCH_ORDER", "exa,firecrawl")
+    assert config.settings(refresh=True).search_order == ("exa", "firecrawl")
+
+
+def test_new_prefix_wins_over_the_legacy_one(monkeypatch):
+    monkeypatch.setenv("ROUTER_SEARCH_ORDER", "exa")
+    monkeypatch.setenv("QUOTAROUTER_SEARCH_ORDER", "firecrawl,exa")
+    assert config.settings(refresh=True).search_order == ("firecrawl", "exa")
+
+
+def test_empty_value_is_not_an_empty_chain(monkeypatch):
+    monkeypatch.setenv("QUOTAROUTER_SEARCH_ORDER", "   ")
+    assert config.settings(refresh=True).search_order == config.DEFAULT_SEARCH_ORDER
+
+
+def test_unparsable_number_falls_back_and_warns(monkeypatch, caplog):
+    monkeypatch.setenv("QUOTAROUTER_MIN_PAGE_CHARS", "forty")
+    with caplog.at_level("WARNING"):
+        assert config.settings(refresh=True).min_page_chars == 40
+    assert any("min_page_chars" in record.message.lower() or "MIN_PAGE_CHARS" in record.message
+               for record in caplog.records)
+
+
+def test_state_dir_honours_the_explicit_variable(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUOTAROUTER_STATE_DIR", str(tmp_path / "state"))
+    settings = config.settings(refresh=True)
+    assert settings.ledger_path == tmp_path / "state" / "ledger.json"
+    assert settings.log_path == tmp_path / "state" / "routes.jsonl"
+
+
+def test_state_dir_follows_xdg(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    assert config.default_state_dir() == tmp_path / "xdg" / "quotarouter"
+
+
+# --- packaging rules ----------------------------------------------------------------------
+def _core_modules() -> list[Path]:
+    return [path for path in CORE_ROOT.rglob("*.py") if "integrations" not in path.parts]
+
+
+def _imported_roots(path: Path) -> set[str]:
+    """Top-level module names this file imports, read from the AST (docstrings do not count)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # a relative import stays inside the package
+                continue
+            if node.module:
+                roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_core_imports_no_host_framework():
+    offenders = []
+    for path in _core_modules():
+        hit = _imported_roots(path) & set(FORBIDDEN_ROOTS)
+        if hit:
+            offenders.append(f"{path.relative_to(REPO_ROOT)}: imports {sorted(hit)}")
+    assert not offenders, "the core must stay importable without a host: " + ", ".join(offenders)
+
+
+def test_integrations_are_not_imported_by_the_core():
+    """`import quotarouter` must not pull Hermes or the MCP server in."""
+    tree = ast.parse((CORE_ROOT / "__init__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and "integrations" in node.module:
+            raise AssertionError("quotarouter/__init__.py must not import integrations eagerly")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert "integrations" not in alias.name, \
+                    "quotarouter/__init__.py must not import integrations eagerly"
+
+
+def test_no_cyrillic_in_tracked_artifacts():
+    offenders = []
+    for path in REPO_ROOT.rglob("*"):
+        if not path.is_file() or ".git/" in str(path) or "__pycache__" in str(path):
+            continue
+        if path.suffix not in TEXT_SUFFIXES:
+            continue
+        if path.name == "e2e-report.json":
+            continue
+        if CYRILLIC.search(path.read_text(encoding="utf-8", errors="ignore")):
+            offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert not offenders, "these files still carry Cyrillic: " + ", ".join(sorted(offenders))
+
+
+BLOCKED_IMPORT_SCRIPT = """
+import sys
+
+ALLOWED = "quotarouter"
+
+
+class Blocker:
+    def find_module(self, name, path=None):
+        return None
+
+    def find_spec(self, name, path=None, target=None):
+        root = name.split(".")[0]
+        if root in ("agent", "hermes_cli", "tools", "hermes_plugins"):
+            raise ImportError(f"host module {root!r} must not be imported by the core")
+        return None
+
+
+sys.meta_path.insert(0, Blocker())
+import quotarouter  # noqa: E402
+
+assert quotarouter.Router is not None
+print("ok")
+"""
+
+
+def test_core_imports_without_hermes(tmp_path):
+    """A separate process with the host modules blocked: the import must still work.
+
+    A subprocess, not a monkeypatched `sys.modules`: deleting modules inside the test session
+    leaves imported singletons from the previous copy behind and breaks later tests.
+    """
+    script = tmp_path / "blocked_import.py"
+    script.write_text(BLOCKED_IMPORT_SCRIPT, encoding="utf-8")
+    env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(REPO_ROOT), "PYTHONDONTWRITEBYTECODE": "1"}
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          env=env, cwd=str(tmp_path), timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.strip().endswith("ok")

@@ -1,8 +1,7 @@
-"""E2E-тесты: плагин внутри настоящего Hermes.
+"""E2E tests: the plugin inside a real Hermes.
 
-Помечены `e2e` и `live`, поэтому не бегут в обычном `pytest -q`. Траты за прогон:
-один поиск у Exa (~$0.007) и одна страница (Jina бесплатно, Firecrawl — 1 кредит если Jina
-не справится).
+Marked `e2e` and `live`, so a plain `pytest -q` skips them. Cost of one run: one Exa search
+(~$0.007) and one page (Jina is free; Firecrawl costs 1 credit only if Jina fails).
 
     python -m pytest -m e2e -q
 """
@@ -34,12 +33,12 @@ def _step(report: harness.RunReport, name: str) -> harness.StepReport:
     for step in report.steps:
         if step.name == name:
             return step
-    raise AssertionError(f"шаг {name} не выполнялся: {[s.name for s in report.steps]}")
+    raise AssertionError(f"step {name} did not run: {[s.name for s in report.steps]}")
 
 
-def test_hermes_has_the_plugin_installed() -> None:
+def test_hermes_is_installed() -> None:
     if not (harness.HERMES_ROOT / "tools" / "web_tools.py").exists():
-        pytest.skip(f"Hermes не установлен в {harness.HERMES_ROOT}")
+        pytest.skip(f"no Hermes installation in {harness.HERMES_ROOT}")
 
 
 def test_plugin_registers_in_the_hermes_registry(report):
@@ -50,22 +49,22 @@ def test_plugin_registers_in_the_hermes_registry(report):
 def test_search_goes_through_the_chain(report):
     step = _step(report, "search_tool")
     assert step.ok, step.detail
-    assert str(step.detail["backend"]).startswith("router:"), step.detail
+    assert str(step.detail["backend"]).startswith("quotarouter:"), step.detail
     assert step.detail["results"] >= 1
 
 
 def test_extract_returns_real_content(report):
     step = _step(report, "extract_tool")
     assert step.ok, step.detail
-    # example.com — легально короткая страница (~160 символов); порог только про пустоту
+    # example.com is legitimately short (~160 chars); the threshold is only about emptiness
     assert step.detail["chars"] >= 40
 
 
 def test_quota_accounting_lands_in_the_isolated_home(report):
     step = _step(report, "state_isolated")
     assert step.ok, step.detail
-    assert step.detail["routes"] >= 2, "поиск и вытяжка должны оставить по строке в журнале"
-    assert step.detail["served_by"], "в журнале нет вендора, который обслужил вызов"
+    assert step.detail["routes"] >= 2, "search and extract must each leave a line in the route log"
+    assert step.detail["served_by"], "the route log names no vendor that served a call"
 
 
 def test_no_keys_on_any_stage_fails_honestly(report):

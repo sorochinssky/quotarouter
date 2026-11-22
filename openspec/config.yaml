@@ -1,19 +1,24 @@
 schema: spec-driven
 
 context: |
-  Плагин-провайдер для Hermes Agent (Python >= 3.11): квотно-осознанный роутер
-  web_search/web_extract. Пакет `router/` — самодостаточный, импортируется и без Hermes.
-  Шим плагина — `hermes_plugin/` (симлинк на пакет), установка симлинком в plugins профиля.
-  Секреты — только переменные окружения (~/.hermes/.env); в репозиторий и в отчёты не пишутся.
-  Тесты уровней 1-3 обязаны быть офлайн (httpx.MockTransport), уровни 4-5 помечены live/e2e
-  и по умолчанию не бегут. Любая правка шима или провайдера требует прогона e2e:
-  `python tests/e2e/harness.py`.
-  Язык артефактов и документации — русский; идентификаторы кода и docstring'и — английские.
+  quotarouter — a quota-aware router for web search and page extraction (Python >= 3.11).
+  The `quotarouter/` package is provider-agnostic and imports no host framework: it is usable
+  as a library, as a Hermes plugin, and as an MCP stdio server.
+  Integrations live in `quotarouter/integrations/` (`hermes.py`, `mcp.py`) and are imported
+  lazily, so a plain `import quotarouter` never drags Hermes in.
+  The plugin shim is `hermes_plugin/` (a symlink to the package); installation is a symlink
+  into the profile's `plugins/` directory.
+  Secrets are environment variables only (`~/.hermes/.env`); they never enter the repository,
+  the docs or the reports. Tests that need a vendor key are marked `live` or `e2e`.
+  Test levels 1-3 must stay offline (`httpx.MockTransport`); levels 4-5 are marked and do not
+  run by default. Any change to the shim, the manifest or the Hermes integration requires
+  `python3 -m pytest -m e2e -q`.
+  All artifacts — README, docs, OpenSpec, docstrings, commit messages — are in English.
 
 rules:
   proposal:
-    - В разделе "Вне этого изменения" явно перечислить, что остаётся оператору.
+    - List explicitly what stays with the operator under "Out of scope".
   design:
-    - Указать, что считается доказательством по каждому шагу стенда.
+    - State what counts as evidence for every step of the stand.
   tasks:
-    - Каждая задача содержит критерий проверки (команда и ожидаемый результат).
+    - "Every task carries its check: the command and the expected result."

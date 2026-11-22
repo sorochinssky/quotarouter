@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from router import errors, types
-from router.ledger import backoff_seconds
+from quotarouter import errors, types
+from quotarouter.ledger import backoff_seconds
 
 
 @pytest.mark.parametrize("status,body,expected", [
