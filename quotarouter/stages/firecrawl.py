@@ -76,7 +76,7 @@ class FirecrawlStage(Stage):
         try:
             data = self._call("POST", "/v2/scrape", {"url": url, "formats": ["markdown"]}, 45.0)
         except errors.StageError as exc:
-            return types.page_error(url, str(exc))
+            return types.page_error(url, str(exc), kind=exc.kind)
         body = data.get("data") or {}
         content = str(body.get("markdown") or body.get("content") or "")
         meta = body.get("metadata") or {}
@@ -97,6 +97,9 @@ class FirecrawlStage(Stage):
         usage = data.get("data") or {}
         remaining = float(usage.get("remainingCredits") or 0.0)
         limit = float(usage.get("planCredits") or remaining or 0.0)
+        # A rollover or a bonus can push remaining above the plan size; the ledger must not
+        # read that as "nothing spent".
+        remaining = min(remaining, limit) if limit > 0 else remaining
         period_end = usage.get("billingPeriodEnd")
         reset_epoch: Optional[float] = None
         period_key: Optional[str] = None

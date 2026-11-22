@@ -8,7 +8,10 @@ Enabled by configuring any ONE of them (all read through `QUOTAROUTER_*`):
 
     QUOTAROUTER_ALERT_TELEGRAM=<bot token>:<chat id>     # POST to the Bot API
     QUOTAROUTER_ALERT_WEBHOOK=https://example/hook       # POST {"text": ...}
-    QUOTAROUTER_ALERT_COMMAND="notify-send quotarouter {kind}"
+    QUOTAROUTER_ALERT_COMMAND="notify-send quotarouter {kind}"   # argv, not shell
+    QUOTAROUTER_ALERT_COMMAND='sh -c '"'"'curl -s -d "$QUOTAROUTER_ALERT_TEXT" $HOOK'"'"''
+    # ^ the text arrives as an environment variable, so nothing from a vendor body is ever
+    #   parsed as shell syntax.
 
 Nothing configured means nothing sent — the default deployment stays quiet.
 
@@ -162,9 +165,12 @@ def _send_command(template: str, kind: str, text: str) -> bool:
     lands as several arguments: use `{kind}` in the command and keep the long text in the log,
     or wrap it yourself (`sh -c 'curl -d "{text}" …'`).
     """
-    argv = template.replace("{kind}", kind).replace("{text}", text.replace("\n", " "))
+    flat = text.replace("\n", " ")
+    argv = template.replace("{kind}", shlex.quote(kind)).replace("{text}", shlex.quote(flat))
+    env = dict(os.environ, QUOTAROUTER_ALERT_TEXT=flat, QUOTAROUTER_ALERT_KIND=kind)
     try:
-        done = subprocess.run(shlex.split(argv), capture_output=True, text=True, timeout=10)
+        done = subprocess.run(shlex.split(argv), capture_output=True, text=True, timeout=10,
+                              env=env)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("quotarouter: alert command failed: %s", exc)
         return False

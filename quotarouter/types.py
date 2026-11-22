@@ -92,5 +92,11 @@ def document(url: str, title: str, content: str, *, source_url: Optional[str] = 
     }
 
 
-def page_error(url: str, error: str) -> dict[str, Any]:
-    return {"url": url, "title": "", "content": "", "error": error}
+def page_error(url: str, error: str, *, kind: str = "") -> dict[str, Any]:
+    """One page that did not come out.
+
+    `kind` separates "this page is closed to everyone" (empty — the site's own answer) from
+    "the vendor refused" (`quota`, `auth`, `throttle`, `transient`). The router treats those
+    two differently: a page-specific refusal must not park the stage, a vendor refusal must.
+    """
+    return {"url": url, "title": "", "content": "", "error": error, "kind": kind}

@@ -48,6 +48,10 @@ def header_map(response: httpx.Response) -> dict[str, str]:
 
 
 def reset_transport() -> None:
-    """Drop any installed transport so the next call goes to the network (used by live tests)."""
-    global _TRANSPORT
-    _TRANSPORT = None
+    """Drop any installed transport so the next call goes to the network (used by live tests).
+
+    This used to set a `_TRANSPORT` global that nothing reads, so a mock installed by an
+    earlier test stayed in force and a "live" run silently answered from fixtures. Closing the
+    client is the only thing that actually removes the transport.
+    """
+    set_transport(None)

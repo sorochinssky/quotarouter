@@ -24,7 +24,13 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+
+try:  # POSIX advisory locks; Windows keeps the in-process lock only
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -96,6 +102,10 @@ class Ledger:
         self._lock = threading.RLock()
         self._state: dict[str, VendorState] = {}
         self._loaded = False
+        # (mtime_ns, size) of the file this process last read or wrote: another process may
+        # have changed it since, and a read-modify-write must start from its version.
+        self._signature: Optional[tuple[int, int]] = None
+        self._depth = 0
 
     # --- persistence ------------------------------------------------------------------
     def _load(self) -> None:
@@ -114,6 +124,56 @@ class Ledger:
                 logger.warning("quotarouter: ledger %s unreadable (%s); starting fresh", self.path, exc)
                 self._state = {}
 
+    def _file_signature(self) -> Optional[tuple[int, int]]:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    @contextmanager
+    def _transaction(self):
+        """Serialise one read-modify-write against every other process using this ledger.
+
+        The in-process `RLock` alone was a promise the docstring made and the code did not keep:
+        the gateway plugin, `quotarouter probe` from a timer and the MCP server are separate
+        processes, and two of them reading the same file and writing their own idea of it lose
+        one update. Losing a charge means the ledger believes a spent vendor still has quota —
+        exactly the failure this project exists to prevent.
+
+        Order matters: take the in-process lock, take the cross-process lock, THEN re-read the
+        file, so the mutation is applied to what the other process actually wrote.
+        """
+        with self._lock:
+            if self._depth:  # nested call in the same thread: the outer one holds the locks
+                self._depth += 1
+                try:
+                    yield
+                finally:
+                    self._depth -= 1
+                return
+            lock_file = None
+            try:
+                if fcntl is not None:
+                    lock_path = self.path.with_name(self.path.name + ".lock")
+                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    lock_file = open(lock_path, "a+")  # noqa: SIM115 - handle held by design
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                if self._file_signature() != self._signature:
+                    self._loaded = False
+                self._load()
+                self._depth = 1
+                try:
+                    yield
+                finally:
+                    self._depth = 0
+            finally:
+                if lock_file is not None:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        lock_file.close()
+
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "updated_at": iso(utcnow()), "vendors": {n: asdict(s) for n, s in self._state.items()}}
@@ -124,6 +184,7 @@ class Ledger:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)  # atomic on POSIX and Windows
+            self._signature = self._file_signature()
         except Exception:
             try:
                 os.unlink(tmp)
@@ -144,7 +205,7 @@ class Ledger:
     def set_limit(self, vendor: str, limit: float, *, source: str = "local", reset_at: Optional[float] = None,
                   period: Optional[str] = None) -> VendorState:
         """Declare the vendor's allowance for the current window, rolling it if the window changed."""
-        with self._lock:
+        with self._transaction():
             state = self.get(vendor)
             want_period = period if period is not None else month_key()
             if state.period != want_period:
@@ -163,7 +224,7 @@ class Ledger:
             return state
 
     def charge(self, vendor: str, units: float, *, cost_usd: float = 0.0) -> VendorState:
-        with self._lock:
+        with self._transaction():
             state = self.get(vendor)
             if units:
                 state.used = round(state.used + float(units), 6)
@@ -174,8 +235,22 @@ class Ledger:
             self._save()
             return state
 
+    def set_remaining(self, vendor: str, remaining: float) -> VendorState:
+        """Store a balance the vendor reported, as `limit - remaining`.
+
+        A probe is the only exact number we get, so it wins over our own counter. It is a
+        business method rather than a write to `VendorState.used` from outside, because a
+        mutation has to happen inside the transaction to be visible to other processes.
+        """
+        with self._transaction():
+            state = self.get(vendor)
+            state.used = max(0.0, round(float(state.limit) - float(remaining), 6))
+            state.last_success = utcnow()
+            self._save()
+            return state
+
     def note_success(self, vendor: str) -> VendorState:
-        with self._lock:
+        with self._transaction():
             state = self.get(vendor)
             state.last_success = utcnow()
             state.consecutive_failures = 0
@@ -188,7 +263,7 @@ class Ledger:
             return state
 
     def pause(self, vendor: str, until: float, kind: str, reason: str = "") -> VendorState:
-        with self._lock:
+        with self._transaction():
             state = self.get(vendor)
             state.paused_until = max(state.paused_until or 0.0, float(until))
             state.pause_kind = kind
@@ -203,7 +278,7 @@ class Ledger:
         return self.pause(vendor, float("inf"), "disabled", reason)
 
     def enable(self, vendor: str) -> VendorState:
-        with self._lock:
+        with self._transaction():
             state = self.get(vendor)
             state.paused_until = None
             state.pause_kind = ""
@@ -218,15 +293,14 @@ class Ledger:
 
     def reset(self, vendor: str) -> VendorState:
         """Forget the local accounting for one vendor (after a plan change or a vendor reset)."""
-        with self._lock:
-            self._load()
+        with self._transaction():
             state = VendorState(vendor=vendor)
             self._state[vendor] = state
             self._save()
             return state
 
     def reset_all(self) -> None:
-        with self._lock:
+        with self._transaction():
             self._state = {}
             self._loaded = True
             self._save()

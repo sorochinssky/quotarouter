@@ -263,3 +263,28 @@ def test_workers_one_stays_sequential(monkeypatch):
     http_client.set_transport(httpx.MockTransport(handler))
     JinaStage().extract(["https://a.example/", "https://b.example/"])
     assert order == ["https://r.jina.ai/https://a.example/", "https://r.jina.ai/https://b.example/"]
+
+
+def test_alert_text_cannot_escape_into_shell_syntax(monkeypatch, tmp_path):
+    """Vendor error bodies land in alerts; a body with `$(...)` must stay data, not syntax."""
+    pwned = tmp_path / "pwned"
+    monkeypatch.setenv("QUOTAROUTER_ALERT_COMMAND", "echo {text}")
+    hostile = f"quota: $(touch {pwned}) `touch {pwned}` ; touch {pwned}"
+    assert alerts.notify(alerts.QUOTA, hostile, now=1000.0) is True
+    assert not pwned.exists(), "the alert text was executed as shell code"
+
+
+def test_alert_text_is_available_as_an_environment_variable(monkeypatch, tmp_path):
+    """The documented pattern for shell scripts: read the text from the environment."""
+    monkeypatch.setenv("QUOTAROUTER_ALERT_COMMAND",
+                       f"sh -c 'printf %s \"$QUOTAROUTER_ALERT_TEXT\" > {tmp_path}/env.txt'")
+    text = "degraded $HOME ; rm -rf /tmp/nope"
+    assert alerts.notify(alerts.KEYLESS, text, now=1000.0) is True
+    assert (tmp_path / "env.txt").read_text() == text
+
+
+def test_alert_kind_is_substituted_quoted(monkeypatch, tmp_path):
+    marker = tmp_path / "kind.txt"
+    monkeypatch.setenv("QUOTAROUTER_ALERT_COMMAND", f"sh -c 'echo {{kind}} > {marker}'")
+    assert alerts.notify(alerts.QUOTA, "x", now=1000.0) is True
+    assert marker.read_text().strip() == "quota"

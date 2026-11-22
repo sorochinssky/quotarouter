@@ -55,7 +55,13 @@ class RouteResult:
 
     @property
     def ok(self) -> bool:
-        return self.payload is not None
+        """True only when a stage actually served something.
+
+        `payload` alone is not enough: for extract the router assembles a list of per-page
+        errors when nobody delivered, and calling that "ok" hid a complete failure behind a
+        payload the caller then had to inspect line by line.
+        """
+        return self.payload is not None and bool(self.stage)
 
     def summary(self) -> str:
         return "; ".join(a.as_line() for a in self.attempts)
@@ -111,11 +117,13 @@ class Router:
             return
         limit, reset_at, source = probed
         period = getattr(stage, "period_override", None)
-        state = self.ledger.set_limit(stage.name, limit, source=source, reset_at=reset_at, period=period)
+        self.ledger.set_limit(stage.name, limit, source=source, reset_at=reset_at, period=period)
         remaining = getattr(stage, "remaining_override", None)
         if remaining is not None:
-            state.used = max(0.0, float(limit) - float(remaining))
-            self.ledger.charge(stage.name, 0.0)  # persists the corrected `used`
+            # Through the ledger, not by writing `state.used` here: the write must happen
+            # inside the ledger's cross-process transaction or another process overwrites it.
+            self.ledger.set_remaining(stage.name, remaining)
+        state = self.ledger.get(stage.name)
         blocked = getattr(stage, "blocked_reason", "")
         if blocked:
             self.ledger.disable(stage.name, blocked)
@@ -356,15 +364,28 @@ class Router:
         # UNLESS the error is the origin's own answer (403/404/410 from the site): that is a
         # real per-page result the caller must see, not a reason to spend another vendor's credits.
         payload = outcome.payload
+        pages_served = 1
         if isinstance(payload, list) and capability == "extract":
-            successes = [e for e in payload if isinstance(e, dict) and not e.get("error") and (e.get("content") or "").strip()]
-            if not successes and not all(_is_page_specific(e) for e in payload if isinstance(e, dict)):
-                detail = "; ".join(str(e.get("error")) for e in payload[:3] if isinstance(e, dict)) or "no content"
+            entries = [e for e in payload if isinstance(e, dict)]
+            successes = [e for e in entries if not e.get("error") and (e.get("content") or "").strip()]
+            pages_served = max(1, len(successes))
+            # A vendor refusal (quota, auth, throttle, a timeout) carried per page still says
+            # the stage is out — pause it with that kind instead of mislabelling it bad_page.
+            vendor_kind = next((str(e.get("kind") or "") for e in entries if e.get("kind")), "")
+            if not successes and vendor_kind:
+                detail = "; ".join(str(e.get("error")) for e in entries[:3]) or "no content"
+                self._pause(stage, vendor_kind, detail)
+                result.attempts.append(RouteAttempt(stage.name, False, f"{vendor_kind}: {detail}"))
+                return None
+            if not successes and not all(_is_page_specific(e) for e in entries):
+                detail = "; ".join(str(e.get("error")) for e in entries[:3]) or "no content"
                 self._pause(stage, types.BAD_PAGE, detail)
                 result.attempts.append(RouteAttempt(stage.name, False, f"{types.BAD_PAGE}: {detail}"))
                 return None
 
-        spent = float(outcome.spent or self._unit_cost(stage, capability))
+        # Extract vendors charge per page (Firecrawl: 1 credit each), so the charge follows the
+        # pages that actually came out — not one unit for the whole batch.
+        spent = float(outcome.spent or self._unit_cost(stage, capability) * pages_served)
         self.ledger.charge(stage.name, spent, cost_usd=outcome.cost_usd)
         state = self.ledger.note_success(stage.name)
         result.attempts.append(RouteAttempt(stage.name, True, spent=spent, remaining=state.remaining()))

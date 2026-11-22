@@ -103,16 +103,16 @@ class KeylessStage(Stage):
         return rows
 
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        for url in urls:
+        def one(url: str) -> dict[str, Any]:
             try:
                 reply = _mcp_call(EXA_MCP, "web_fetch_exa", {"url": url}, 45.0)
                 text = _mcp_text(reply)
             except errors.StageError as exc:
-                results.append(types.page_error(url, f"keyless: {exc}"))
-                continue
+                # Keep the kind: a throttled or exhausted anonymous tier must pause this stage,
+                # not look like a page the site refused.
+                return types.page_error(url, f"keyless: {exc}", kind=exc.kind)
             if not text.strip():
-                results.append(types.page_error(url, "keyless: empty page"))
-                continue
-            results.append(types.document(url, "", text, source_url=url))
-        return results
+                return types.page_error(url, "keyless: empty page")
+            return types.document(url, "", text, source_url=url)
+
+        return [one(url) for url in urls]

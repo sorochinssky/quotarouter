@@ -115,7 +115,9 @@ class JinaStage(Stage):
         try:
             resp = http_client.get(f"{BASE}{url}", headers={"Accept": "text/plain"}, timeout=45.0)
         except errors.StageError as exc:  # classified transport failure (timeout, DNS, TLS)
-            return types.page_error(url, f"jina: {exc.kind}: {exc}")
+            # A vendor-level failure, not this page's fault: keep the kind so the router can
+            # pause the stage with the reason that actually applies.
+            return types.page_error(url, f"jina: {exc.kind}: {exc}", kind=exc.kind)
         except Exception as exc:  # anything else must still be one page's problem
             logger.warning("jina: unexpected transport error for %s: %s", url, exc)
             return types.page_error(url, f"jina: transport: {exc}")
@@ -129,8 +131,8 @@ class JinaStage(Stage):
             try:
                 self._raise_for_status(resp.status_code, resp.text or "", headers)
             except errors.StageError as exc:
-                return types.page_error(url, f"jina: {exc.kind}: {exc}")
-            return types.page_error(url, f"jina: HTTP {resp.status_code}")
+                return types.page_error(url, f"jina: {exc.kind}: {exc}", kind=exc.kind)
+            return types.page_error(url, f"jina: HTTP {resp.status_code}", kind=types.BAD_PAGE)
         title, source, body = _split_reader_output(resp.text or "")
         if looks_like_stub(body, min_chars):
             return types.page_error(url, f"jina: page looks blocked or empty ({len(body)} chars)")
