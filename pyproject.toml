@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-web-router"
+version = "0.1.0"
+description = "Quota-aware web search/extract router for Hermes Agent: spend free monthly allowances first, fail over by remaining quota, not by 402."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Andrey Sorochinsky" }]
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["router"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: hits real vendor APIs, needs keys; excluded by default (run with -m live)",
+]
+addopts = "-m 'not live' --strict-markers"

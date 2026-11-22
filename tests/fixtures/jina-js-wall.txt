@@ -1,0 +1,6 @@
+Title: Just a moment...
+
+URL Source: https://protected.example/
+
+Markdown Content:
+Checking your browser before accessing protected.example.

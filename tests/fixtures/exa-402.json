@@ -1,0 +1,6 @@
+{
+  "error": {
+    "message": "NO_MORE_CREDITS",
+    "code": "quota_exhausted"
+  }
+}

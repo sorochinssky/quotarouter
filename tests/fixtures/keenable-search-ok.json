@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "title": "K",
+      "url": "https://k.example/",
+      "snippet": "s",
+      "published_date": "2026-11-01"
+    }
+  ],
+  "usage": {
+    "credits": 1
+  }
+}

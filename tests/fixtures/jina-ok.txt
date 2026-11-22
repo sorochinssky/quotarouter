@@ -1,0 +1,10 @@
+Title: Example Domain
+
+URL Source: https://example.com/
+
+Published Time: Thu, 19 Nov 2026 22:10:26 GMT
+
+Markdown Content:
+This domain is for use in documentation examples without needing permission.
+
+[Learn more](https://iana.org/help/example-domains)

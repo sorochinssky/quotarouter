@@ -1,0 +1,21 @@
+{
+  "requestId": "adff5cf2d1d67484eb937b2fc1ad25f7",
+  "resolvedSearchType": "",
+  "results": [
+    {
+      "id": "https://github.com/nousresearch/hermes-agent/",
+      "title": "NousResearch/hermes-agent",
+      "url": "https://github.com/nousresearch/hermes-agent/",
+      "highlights": [
+        "Nous Research agent framework: terminal, TUI, desktop, messaging gateway."
+      ]
+    }
+  ],
+  "searchTime": 654.1,
+  "costDollars": {
+    "total": 0.007,
+    "search": {
+      "neural": 0.007
+    }
+  }
+}
