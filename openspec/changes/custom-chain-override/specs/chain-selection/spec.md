@@ -75,17 +75,54 @@ reason if it fails.
 - **WHEN** a parked stage is called with the force flag and the vendor answers "quota exhausted" again
 - **THEN** exactly one attempt is recorded as forced, and the stage stays parked for that reason
 
-### Requirement: Named chains are configuration, validated once
+### Requirement: Named chains are declared in a configuration file
 
-A configuration value MUST be able to declare named chains as an ordered mapping of name to
-stages. A malformed declaration MUST be reported and ignored without preventing startup; an
-unknown capability or stage inside a named chain MUST be treated as a caller error when that name
-is requested. Names MUST be listed wherever the caller can discover them (status output and the
-protocol surface's status tool).
+Named chains MUST be declarable in a configuration file whose path is a setting, with a documented
+default location. A chain MUST declare its search stages and its extract stages independently, and
+MAY declare a description, a budget and a strictness flag. The file MUST be read once at startup.
+
+#### Scenario: one chain, two capabilities
+- **WHEN** the file declares a chain with both search and extract stages
+- **THEN** a search call and an extract call asking for that name each get their own list
+
+### Requirement: A malformed chain entry is dropped and reported, the rest loads
+
+An entry with an unknown key, an unknown stage name, an empty list, a wrong type or an invalid
+budget MUST be reported by name and dropped. Every other entry MUST remain usable and the process
+MUST start.
 
 #### Scenario: a bad declaration does not stop the process
-- **WHEN** the chain configuration contains one valid name and one malformed entry
+- **WHEN** the chain file contains one valid name and one malformed entry
 - **THEN** the process starts, the valid name is usable, and the malformed entry is reported
+
+### Requirement: A chain that declares no stages for a capability refuses that capability
+
+A chain that declares only one capability MUST refuse calls for the other with a message naming the
+chain and the missing capability. It MUST NOT fall back to the default order.
+
+#### Scenario: a search-only chain does not silently serve an extract
+- **WHEN** an extract call asks for a chain that declares no extract stages
+- **THEN** the call is refused with a message naming the chain, and no vendor is dialed
+
+### Requirement: The single-line shorthand replaces the file instead of merging
+
+A one-line environment declaration MAY exist for throwaway setups, applying one list to both
+capabilities. When it is set, the chains it declares MUST be the only ones that exist, and the
+setting MUST be reported as having replaced the file. There MUST NOT be a merge order to reason about.
+
+#### Scenario: the shorthand replaces the file
+- **WHEN** both a chain file and the environment shorthand are present
+- **THEN** only the shorthand's chains exist, and the ignored file is reported
+
+### Requirement: A mixed extract call records which stage delivered which page
+
+When one extract call receives pages from more than one stage, the audit record MUST state how many
+pages each stage delivered. It MUST NOT claim a single stage served a batch that several stages
+served.
+
+#### Scenario: a batch split across two stages
+- **WHEN** an extract call with fallback receives three pages from one stage and two from another
+- **THEN** the audit record names both stages with their page counts
 
 ### Requirement: The operator can disable per-call overrides
 
