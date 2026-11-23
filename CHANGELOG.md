@@ -6,11 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.2] — 2026-11-23
+
 ### Changed
 
 - The README installs with `pip install quotarouter`: 0.3.1 is published on PyPI, so the
   line that told the reader to install from a checkout (and promised PyPI "once it is")
-  was describing a state that no longer exists.
+  was describing a state that no longer exists. Published metadata cannot be edited,
+  so this ships as a new release.
 
 ## [0.3.1] — 2026-11-23
 
@@ -107,7 +112,8 @@ First version meant to be used outside the author's machine.
   command) with a cooldown, and a page-level error policy that does not park a healthy stage for
   a blocked website.
 
-[Unreleased]: https://github.com/sorochinssky/quotarouter/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/sorochinssky/quotarouter/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/sorochinssky/quotarouter/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.3.1
 [0.3.0]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.3.0
 [0.2.0]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.2.0

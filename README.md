@@ -391,9 +391,9 @@ There is no CI in this repository by choice: `scripts/preflight.sh` is the gate 
 levels. What it checks and why is written down in `docs/development.md`.
 
 The code was also reviewed by models that did not write it — `scripts/model_review.py` runs that
-review (free tiers only) and `docs/reviews/2026-11-22-model-review.md` records what came back,
-what was fixed and what was rejected with a reason. Two of those findings were accounting bugs
-that made the ledger optimistic, which is the failure mode this project exists to prevent.
+review (free tiers only); the notes it produced were removed after a decision by the owner. Two of
+those findings were accounting bugs that made the ledger optimistic, which is the failure mode
+this project exists to prevent.
 
 ## What is verified, and what is only written
 

@@ -184,9 +184,9 @@ def test_core_imports_without_hermes(tmp_path):
     assert proc.stdout.strip().endswith("ok")
 
 
-def test_the_review_notes_are_tracked_while_raw_answers_are_not():
-    """`reviews/` in .gitignore also swallowed `docs/reviews/`, so the review notes silently
-    never entered the repository — the file existed on one machine and nowhere else."""
+def test_the_raw_model_answers_are_not_tracked():
+    """`reviews/` in .gitignore keeps raw model answers out of git: a file only a reviewer's
+    machine produced must not masquerade as project documentation."""
     import subprocess
 
     root = Path(__file__).resolve().parents[1]
@@ -195,7 +195,6 @@ def test_the_review_notes_are_tracked_while_raw_answers_are_not():
         return subprocess.run(["git", "check-ignore", "-q", rel], cwd=root).returncode == 0
 
     assert ignored("reviews/nemotron.json"), "raw model answers must stay out of git"
-    assert not ignored("docs/reviews/2026-11-22-model-review.md"), "the review notes must be tracked"
 
 
 def test_the_cli_builds_its_router_from_the_core():

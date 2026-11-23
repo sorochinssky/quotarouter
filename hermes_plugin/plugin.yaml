@@ -1,5 +1,5 @@
 name: quotarouter
-version: 0.3.1
+version: 0.3.2
 description: "Quota-aware web search and page extraction: spend free monthly allowances first and pick the provider by remaining quota instead of reacting to a 402. A call may pin its own chain, from one vendor up, and set a budget. The order is configuration, not prose: run `quotarouter status` for the current one. Vendors without a key are skipped."
 author: Andrey Sorochinsky
 kind: backend

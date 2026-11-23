@@ -296,7 +296,7 @@ REVIEWERS = [
 ]
 
 # Which vendors are behind each reviewer, so a report can say "independent" honestly: two models
-# from one vendor are one opinion (see docs/reviews/2026-11-22-model-review.md).
+# from one vendor are one opinion.
 FAMILIES = {
     "nemotron": "nvidia", "ernie": "baidu", "dots": "dots-studio", "particle": "particle-ai",
     "flint": "recursive", "glm-opencode": "zhipu", "nemotron-opencode": "nvidia",
