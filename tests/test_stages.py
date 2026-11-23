@@ -16,6 +16,7 @@ from quotarouter.stages.exa import ExaStage
 from quotarouter.stages.firecrawl import FirecrawlStage
 from quotarouter.stages.jina import JinaStage, _split_reader_output, looks_like_stub
 from quotarouter.stages.keenable import KeenableStage
+from quotarouter.stages.keyless import KeylessStage
 from quotarouter.stages.tavily import TavilyStage
 from conftest import json_response, text_response
 
@@ -201,3 +202,62 @@ def test_jina_domain_block_is_a_page_error_not_a_stage_error():
     assert errors.is_domain_block(body)
     assert not errors.is_domain_block("Invalid API key")
     assert not errors.is_domain_block("")
+
+
+# --- Keyless (anonymous MCP tier) ---------------------------------------------------------
+# Every test below is a live failure that the fixtures did not catch: the tier returned 406 on
+# every call, then delivered a tool's complaint as if it were the page.
+
+KEYLESS_HIT = {"result": {"content": [{"type": "text", "text":
+    '[{"url": "https://docs.python.org/3/library/asyncio.html", "title": "asyncio", "snippet": "s"}]'}]},
+    "jsonrpc": "2.0", "id": 1}
+
+
+def test_keyless_accepts_both_json_and_event_stream():
+    """The MCP servers answer 406 to a client that accepts only JSON — on every single call."""
+    seen = {}
+
+    def handler(request):
+        seen.update(request.headers)
+        return json_response(KEYLESS_HIT)
+
+    wire(handler)
+    KeylessStage().search("python asyncio", 3)
+    accept = seen.get("accept", "")
+    assert "application/json" in accept and "text/event-stream" in accept, accept
+
+
+def test_keyless_reads_an_event_stream_answer():
+    body = "event: message\ndata: " + json.dumps(KEYLESS_HIT) + "\n\n"
+    wire(lambda r: text_response(body, headers={"content-type": "text/event-stream"}))
+    outcome = KeylessStage().search("python asyncio", 3)
+    assert outcome.payload["data"]["web"][0]["url"].endswith("asyncio.html")
+
+
+def test_keyless_fetch_asks_for_urls_as_a_list():
+    """`web_fetch_exa` validates its arguments and requires `urls`, not `url`."""
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return json_response({"result": {"content": [{"type": "text", "text": "# Example"}]}})
+
+    wire(handler)
+    KeylessStage().extract(["https://example.com"])
+    arguments = seen["params"]["arguments"]
+    assert arguments == {"urls": ["https://example.com"]}, arguments
+
+
+def test_keyless_treats_a_tool_error_as_a_failure_not_a_page():
+    """`isError: true` arrives with 200 and the complaint as content; as a page that becomes
+    "MCP error -32602: Invalid arguments" printed instead of the documentation."""
+    complaint = {"result": {"isError": True, "content": [{"type": "text", "text":
+        "MCP error -32602: Input validation error: Required at urls"}]},
+        "jsonrpc": "2.0", "id": 1}
+    wire(lambda r: json_response(complaint))
+    outcome = KeylessStage().search("q", 3)
+    assert outcome.payload is None, outcome.payload
+    assert outcome.failure is not None and "MCP error" in outcome.failure.message
+    pages = KeylessStage().extract(["https://example.com"])
+    assert pages[0].get("content") in (None, ""), pages[0]
+    assert "MCP error" in (pages[0].get("error") or ""), pages[0]

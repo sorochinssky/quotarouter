@@ -28,25 +28,65 @@ def _mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: float) ->
     """Minimal MCP-over-HTTP tool call: JSON-RPC 2.0, `tools/call`."""
     payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                "params": {"name": tool, "arguments": arguments}}
-    resp = http_client.post(url, headers={"Content-Type": "application/json", "Accept": "application/json"},
+    resp = http_client.post(url,
+                            headers={"Content-Type": "application/json",
+                                     # The MCP servers reject a client that does not accept both:
+                                     # 406 "Client must accept both application/json and
+                                     # text/event-stream". This one header is the difference
+                                     # between the last-resort tier working and failing on every
+                                     # single call — which is exactly what it did.
+                                     "Accept": "application/json, text/event-stream"},
                             json=payload, timeout=timeout)
     headers = http_client.header_map(resp)
     text = resp.text or ""
     if resp.status_code >= 400:
         raise errors.classify(resp.status_code, text, headers)
+    if "text/event-stream" in (resp.headers.get("content-type") or ""):
+        return _sse_result(text)
     try:
         return resp.json()
     except ValueError as exc:
         raise errors.TransientError(f"keyless MCP returned non-JSON ({exc})", status=resp.status_code) from exc
 
 
+def _sse_result(text: str) -> dict[str, Any]:
+    """Read a JSON-RPC answer that arrived framed as server-sent events."""
+    answers: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        body = line[len("data:"):].strip()
+        if not body or body == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            answers.append(parsed)
+    for answer in answers:
+        if "result" in answer or "error" in answer:
+            return answer
+    if answers:
+        return answers[-1]
+    raise errors.TransientError("keyless MCP sent an event stream with no JSON-RPC answer")
+
+
 def _mcp_text(result: dict[str, Any]) -> str:
     """MCP tool results arrive as `content: [{type: text, text: ...}]`."""
+    body = result.get("result") or {}
     parts = []
-    for item in (result.get("result") or {}).get("content") or []:
+    for item in body.get("content") or []:
         if isinstance(item, dict) and item.get("type") == "text":
             parts.append(str(item.get("text") or ""))
-    return "\n".join(parts).strip()
+    text = "\n".join(parts).strip()
+    # A tool that rejects its arguments answers 200 with `isError: true` and the complaint as
+    # content. Read as a page, that complaint becomes the page text — a documentation page
+    # silently replaced by "MCP error -32602: Invalid arguments".
+    if body.get("isError"):
+        raise errors.TransientError(f"keyless tool error: {text[:300]}")
+    return text
 
 
 class KeylessStage(Stage):
@@ -65,9 +105,9 @@ class KeylessStage(Stage):
     def search(self, query: str, limit: int) -> types.Outcome:
         try:
             reply = _mcp_call(EXA_MCP, "web_search_exa", {"query": query, "numResults": max(1, min(limit, 10))}, 30.0)
+            text = _mcp_text(reply)  # a tool error surfaces here too, not only at the transport
         except errors.StageError as exc:
             return self._fail(exc.kind, f"keyless: {exc}", status=exc.status, retry_after=exc.retry_after)
-        text = _mcp_text(reply)
         if not text:
             return self._fail(types.EMPTY, "keyless: empty reply")
         rows = self._parse_rows(text, limit)
@@ -105,7 +145,8 @@ class KeylessStage(Stage):
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
         def one(url: str) -> dict[str, Any]:
             try:
-                reply = _mcp_call(EXA_MCP, "web_fetch_exa", {"url": url}, 45.0)
+                # `urls`, plural: the tool validates its arguments and rejects `url`.
+                reply = _mcp_call(EXA_MCP, "web_fetch_exa", {"urls": [url]}, 45.0)
                 text = _mcp_text(reply)
             except errors.StageError as exc:
                 # Keep the kind: a throttled or exhausted anonymous tier must pause this stage,

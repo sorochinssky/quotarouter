@@ -1,5 +1,43 @@
 # Vendor measurements, 2026-11-22
 
+## What is verified, and what is only written
+
+"Supported" is a claim about code. This table is about evidence — measured on 2026-11-22 with
+the real keys in `~/.hermes/.env`, from this host.
+
+- **exa** — search and extract both answered live (`POST /contents` → 172 chars, `costDollars
+  0.001`). Remaining credit is a local estimate; Exa exposes no balance endpoint.
+- **firecrawl** — search answered live (`POST /v2/search` → 200, 2 credits), extract answers
+  live (955/1000 credits, balance read from the vendor).
+- **jina** — `GET https://r.jina.ai/<url>` answered 200 with page text, no key needed. Extract
+  only; it has no search endpoint.
+- **keyless** — `mcp.exa.ai/mcp` and `search.parallel.ai/mcp` answered live after two fixes
+  below: search 0.53 s, extract 215 chars. Anonymous tier, not metered.
+- **deepseek** — the key is valid and the balance endpoint answers, but
+  `total_balance: -0.06`, `is_available: false` → every search is a 402. Parked in the ledger;
+  `quotarouter enable deepseek` after a top-up.
+- **tavily** — **never verified.** No key. The endpoint is real (`POST /search` with a dummy
+  key answers `401 Unauthorized: missing or invalid API key`, `GET /usage` likewise), but no
+  successful response has ever been seen. The test fixture is hand-written
+  (`https://hermes.example/`), so it proves the mapping, not the vendor.
+- **keenable** — **never verified, and it is first in the default search order.** No key.
+  `POST /v1/search` with a dummy key answers `401 Malformed API key`, so the route exists, but
+  the success shape is from a hand-written fixture (`https://k.example/`).
+
+Two defects found by asking this question rather than trusting the code:
+
+1. The keyless tier sent `Accept: application/json` and got `406 Client must accept both
+   application/json and text/event-stream` on **every** call — the last-resort tier had never
+   worked. It also could not read a reply framed as server-sent events.
+2. Its extract called `web_fetch_exa` with `{"url": ...}`; the tool requires `{"urls": [...]}`
+   and answers `200` with `isError: true` and the complaint as content. That complaint was
+   parsed as the page, so a documentation page would have been replaced by
+   `MCP error -32602: Invalid arguments`.
+
+Both are fixed, with tests that assert the accept header, the event-stream framing, the `urls`
+argument and the `isError` path.
+
+
 Captured with live calls on production keys (`~/.hermes/.env`), so the ledger's quota maths
 and the per-stage unit costs rest on facts rather than on price lists.
 
