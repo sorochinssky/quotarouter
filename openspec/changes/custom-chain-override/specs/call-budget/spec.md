@@ -65,6 +65,29 @@ unchanged. A protocol surface MUST return them as tool errors and MUST remain av
 - **WHEN** a caller asks for a free-only call with a strict chain of one balance-funded stage
 - **THEN** the call is refused before any network call, and the ledger is unchanged
 
+### Requirement: A dollar ceiling does not price what it cannot price
+
+A cost ceiling MUST estimate only stages whose unit is money. A stage metered in vendor credits or
+requests MUST be treated as under the free-only budget: usable inside its free grant, refused once
+the grant is spent. The router MUST NOT convert credits or requests into money, and MUST NOT ignore
+unpriceable stages when comparing the estimate with the ceiling. A refusal caused by this rule MUST
+say so in one line.
+
+#### Scenario: a credit-metered stage is not priced at a guess
+- **WHEN** a call sets a dollar ceiling and the first stage of the chain spends vendor credits
+- **THEN** that stage serves only inside its free grant, and after the grant is spent it is skipped
+  with a reason naming the rule
+
+### Requirement: A caller may tighten a chain's budget but never loosen it
+
+When a chain declares a budget, a call MUST be able to ask for a stricter one, and MUST NOT be able
+to relax it. The applied budget MUST be the stricter of the chain's and the call's, and the audit
+record MUST show the budget that was actually applied.
+
+#### Scenario: a free chain stays free when handed a ceiling
+- **WHEN** a call asks for a chain that declares a free-only budget together with a dollar ceiling
+- **THEN** the free-only budget applies, and no balance-funded stage is dialed
+
 ### Requirement: The budget of a call is recorded
 
 Every call MUST record the budget it ran under (free-only, a ceiling, or none) next to the chain it

@@ -180,6 +180,37 @@ audit line (`spent` per attempt is real, and the vendor's own probe corrects the
 next call) and leaves the reservation for the time the counter is ever observed to matter. Saying
 this here is the point — an unstated race becomes a mystery later.
 
+### D11. Units are not comparable, so a USD ceiling implies free-grant discipline
+
+The stages do not count the same thing. `exa` and `deepseek` spend USD (`unit = "usd"`),
+`firecrawl`, `tavily` and `keenable` spend vendor credits or requests (`unit = "credits"` /
+`"requests"`), `jina` and the anonymous tier count requests that cost nothing. A ceiling in dollars
+therefore cannot price a chain that includes a credit-metered stage: converting "2 credits" into
+money requires a plan the router does not know.
+
+Two dishonest options are rejected: converting credits at a guessed rate, and silently ignoring the
+unpriceable stages (which would let a call overshoot the ceiling it was given).
+
+The rule: **`max_cost_usd` may route only to stages priced in USD, and only while their grant
+holds.** Every credit-metered stage is treated exactly as under the free-only budget — used inside
+its free grant, skipped once the grant is spent, because beyond the grant it becomes money nobody can
+estimate. The refusal message says this in one line, so a caller who wanted a dollar ceiling learns
+why the cheap vendors dropped out.
+
+`budget="free"` needs no conversion and keeps working across units: it asks a yes/no question per
+stage ("can this call cost money?"), not a sum.
+
+### D12. A chain's budget is a floor of safety, not a default to be overridden
+
+If a chain declares `budget = "free"` and a caller passes nothing, the chain's budget applies. If the
+caller passes a *stricter* budget (a ceiling of 0.01 on a chain with no budget, or free on a chain
+with a dollar ceiling), the stricter one wins. A caller may never loosen a chain's declared budget:
+`chains.free` is a promise that this name does not spend money, and a name whose promise holds only
+until someone passes an argument is not a promise.
+
+Precedence, one line: **the strictest of (chain budget, call budget)**. Implemented as a rank
+(`free` > `ceiling` > none) with the tighter ceiling winning inside the same rank.
+
 ## Resolution
 
 ```
@@ -266,6 +297,13 @@ the override flag, so a caller can discover what it may ask for.
   the guide must say so in the same paragraph as the format.
 - **The file is configuration, not a secret store.** It names stages and budgets; keys stay in the
   environment file. Nothing in it may be used to build a path or a command.
+- **`hermes_plugin/plugin.yaml` is a third place that carries the version, and a description that
+  spells out the default order.** Both drift silently: the plugin can advertise 0.2.0 while the
+  package is 0.3.0, and an order that was changed years ago. The version gets a test against
+  `quotarouter.__version__`, and the hardcoded order leaves the description in favour of a pointer
+  to `quotarouter status`.
+- **An unreadable chain file must not stop the service.** Missing file, permission denied, broken
+  TOML — each is reported once and the default order serves. A configuration error is not an outage.
 - **No cache between calls.** The same query on two chains costs twice; the ledger makes that
   visible but nothing dedupes it. A cache is a separate change with its own freshness story.
 

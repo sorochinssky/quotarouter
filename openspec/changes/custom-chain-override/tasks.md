@@ -18,6 +18,9 @@ Each task carries the command that proves it, and the result that counts as proo
   with both present asserting only the shorthand's names exist and the warning was emitted.
 - [ ] 1.4 Add `QUOTAROUTER_ALLOW_CHAIN_OVERRIDE` (default on) to `Settings`. Check:
   `python -c "from quotarouter import config; print(config.Settings().allow_chain_override)"` → `True`.
+- [ ] 1.4b An unreadable chain file (missing, permission denied, broken TOML) is reported once and
+  the default order serves. Check: three cases, each asserting startup succeeds, the message names
+  the path, and `settings.search_order` is the default.
 - [ ] 1.5 Declare funding per stage: `funding = "free"` (unmetered or free monthly grant) or
   `"balance"` (prepaid money). `deepseek` is the only stage declaring `balance` today. Check:
   `python -m pytest tests/test_funding.py -q` → every stage class answers, and the status surface
@@ -64,6 +67,15 @@ Each task carries the command that proves it, and the result that counts as proo
   both the chain and the budget.
 - [ ] 4.5 An unavailable budget value is a caller error, not a silent default. Check: a case with
   `budget="cheap"` asserting the message lists the accepted values.
+
+- [ ] 4.6 A ceiling over a chain that includes a credit-metered stage applies the free-grant rule
+  instead of converting units; the refusal names the rule. Check: a case with a spent credit grant
+  asserting the skip reason, and a case with an unspent grant asserting the stage served.
+- [ ] 4.7 The applied budget is the stricter of the chain's and the call's; a call cannot loosen a
+  free chain. Check: a four-cell table (chain none/ceiling/free × call none/ceiling/free), asserting
+  the applied budget and which stages were dialed.
+- [ ] 4.8 The ceiling comparison is inclusive: an estimate exactly equal to the ceiling passes, one
+  cent above refuses. Check: two cases pinning `>` and not `>=`, so the boundary cannot drift.
 
 ## 5. Accounting, force and audit
 
@@ -112,10 +124,16 @@ Each task carries the command that proves it, and the result that counts as proo
 - [ ] 7.4 `quota_status` reports the named chains, whether overrides are allowed and each stage's
   funding. Check: the tool output contains all three.
 
+- [ ] 7.5 The real stdio transport is exercised, not only the in-process one: a subprocess speaks
+  `initialize`, a pinned search, a bad chain, `quota_status`. Check:
+  `python -m pytest tests/test_mcp_stdio.py -q` (the gap left open by earlier rounds).
+
 ## 8. Evidence beyond unit tests
 
 - [ ] 8.1 Concurrency: two threads, two chains, a barrier inside the fake stage. Check: each thread
   dialed only its own stage; `settings.search_order` is unchanged afterwards.
+- [ ] 8.1b Load: eight threads, three chains, a barrier; no stage is dialed by a thread that did
+  not name it, and the shared router's defaults are unchanged. Check: the same file, eight threads.
 - [ ] 8.2 Live: one search pinned to `exa`, and one free-only extract. Check:
   `python -m pytest -m "live and not e2e" -q` → green, and the audit lines read `chain_mode:
   custom` / `budget: free`.
@@ -127,8 +145,9 @@ Each task carries the command that proves it, and the result that counts as proo
 - [ ] 9.1 `docs/chains.md` — the operator's guide: file location and precedence, the full format
   with every key, three worked examples (one vendor, free-only, fallback), how to verify a chain
   without spending anything (`route`, `chains`, `status --json`), what a refusal message means, and
-  the reload rule (restart). Check: every command in it is executed by
-  `tests/test_docs_examples.py`, and the file parses as TOML where it shows TOML.
+  the reload rule (restart). Ships `docs/chains.example.toml` to copy. Check: every command in it
+  is executed by `tests/test_docs_examples.py`, the fenced TOML blocks parse, and the example file is
+  byte-identical to the one the tests load.
 - [ ] 9.2 README: a "Choosing a chain per call" section with the three ways in (library, MCP, CLI),
   the strictness rule, the budget in one paragraph, and the Hermes limitation stated plainly. Check:
   the examples in it are the ones the tests execute.
@@ -136,6 +155,11 @@ Each task carries the command that proves it, and the result that counts as proo
   (force spends money). Check: the section names every new environment variable and the file path.
 - [ ] 9.4 `CHANGELOG.md` under `Unreleased`, with the compatibility note (new optional arguments,
   additive audit fields). Check: `git grep -n "Unreleased" CHANGELOG.md` shows the entry.
-- [ ] 9.5 Archive the change after merge: `openspec archive custom-chain-override` and confirm
+- [ ] 9.5 `hermes_plugin/plugin.yaml` version matches `quotarouter.__version__` (third place that
+  carried it), and the description no longer spells out the default order. Check: a packaging test
+  asserting equality; `git grep -c 'keenable ->' hermes_plugin/plugin.yaml` → 0.
+- [ ] 9.6 The built sdist contains `docs/chains.md` and the example chain file. Check:
+  `python -m build --sdist && tar tzf dist/*.tar.gz | grep -c 'docs/chains'` → 2 (md + example).
+- [ ] 9.7 Archive the change after merge: `openspec archive custom-chain-override` and confirm
   `openspec list` no longer shows it. Check: `openspec validate --change custom-chain-override`
   before archiving, `openspec list` after.
