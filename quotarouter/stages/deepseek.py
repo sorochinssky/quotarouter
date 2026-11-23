@@ -43,7 +43,13 @@ class DeepSeekStage(Stage):
             raise errors.TransientError(f"DeepSeek returned non-JSON ({exc})", status=resp.status_code) from exc
 
     def search(self, query: str, limit: int) -> Outcome:
-        data = self._post("/v1/tools/search", {"query": query, "max_results": max(1, min(int(limit), 50))}, 30.0)
+        try:
+            data = self._post("/v1/tools/search", {"query": query, "max_results": max(1, min(int(limit), 50))}, 30.0)
+        except errors.StageError as exc:
+            # Every other stage reports failure as an Outcome; raising here made the stage's
+            # contract depend on which vendor it was (a 402 arrived as an exception, not as
+            # `kind=quota`).
+            return self._fail(exc.kind, f"deepseek: {exc}", status=exc.status, retry_after=exc.retry_after)
         rows = []
         for index, item in enumerate(data.get("results") or [], start=1):
             rows.append(types.web_hit(
@@ -62,7 +68,7 @@ class DeepSeekStage(Stage):
             try:
                 data = self._post("/v1/tools/fetch", {"url": url}, 25.0)
             except errors.StageError as exc:
-                results.append(types.page_error(url, str(exc)))
+                results.append(types.page_error(url, f"deepseek: {exc}", kind=exc.kind))
                 continue
             content = str(data.get("content") or data.get("markdown") or "")
             if not content.strip():

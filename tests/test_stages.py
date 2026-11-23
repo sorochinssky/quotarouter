@@ -7,6 +7,7 @@ here as a test failure instead of as an empty search in production.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from quotarouter.stages.exa import ExaStage
 from quotarouter.stages.firecrawl import FirecrawlStage
 from quotarouter.stages.jina import JinaStage, _split_reader_output, looks_like_stub
 from quotarouter.stages.keenable import KeenableStage
+from quotarouter.stages.deepseek import DeepSeekStage
 from quotarouter.stages.keyless import KeylessStage
 from quotarouter.stages.tavily import TavilyStage
 from conftest import json_response, text_response
@@ -288,3 +290,136 @@ Posts about versioning and backwards compatibility in the protocol
     assert rows[0]["title"] == "Versioning"
     assert rows[0]["description"].startswith("The Model Context Protocol uses")
     assert "N/A" not in rows[0]["description"]
+
+
+# --- DeepSeek (paid fallback, parked while the balance is negative) ------------------------
+DEEPSEEK_SEARCH = {"results": [
+    {"url": "https://d", "title": "D", "summary": "s"},
+    {"url": "https://e", "title": "E", "content": "c"},
+]}
+
+
+def test_deepseek_search_charges_per_call_not_per_result(keys):
+    keys(DEEPSEEK_API_KEY="k")
+    wire(lambda r: json_response(DEEPSEEK_SEARCH))
+    outcome = DeepSeekStage().search("q", 5)
+    assert [row["url"] for row in outcome.payload["data"]["web"]] == ["https://d", "https://e"]
+    assert outcome.spent == 0.00075
+    assert outcome.cost_usd == 0.00075
+
+
+def test_deepseek_empty_answer_is_not_a_success(keys):
+    keys(DEEPSEEK_API_KEY="k")
+    wire(lambda r: json_response({"results": []}))
+    outcome = DeepSeekStage().search("q", 5)
+    assert outcome.payload is None
+    assert outcome.failure.kind == types.EMPTY
+
+
+def test_deepseek_402_is_quota_not_a_bad_page(keys):
+    """A negative balance answers 402; the router parks on QUOTA, not on "the page refused"."""
+    keys(DEEPSEEK_API_KEY="k")
+    body = json.loads((Path(__file__).parent / "fixtures" / "deepseek-search-402.json").read_text())
+    wire(lambda r: json_response(body, status=402))
+    outcome = DeepSeekStage().search("q", 5)
+    assert outcome.payload is None
+    assert outcome.failure.kind == types.QUOTA
+
+
+def test_deepseek_extract_keeps_the_pages_that_worked(keys):
+    keys(DEEPSEEK_API_KEY="k")
+
+    def handler(request):
+        if b"bad" in request.content:
+            return json_response({"error": "nope"}, status=500)
+        return json_response({"url": "https://a", "title": "A", "content": "text"})
+
+    wire(handler)
+    pages = DeepSeekStage().extract(["https://a", "https://bad"])
+    assert pages[0]["content"] == "text"
+    assert pages[1].get("error")
+
+
+def test_deepseek_extract_calls_an_empty_page_a_failure(keys):
+    keys(DEEPSEEK_API_KEY="k")
+    wire(lambda r: json_response({"content": "   "}))
+    pages = DeepSeekStage().extract(["https://a"])
+    assert pages[0].get("error") and "empty" in pages[0]["error"]
+
+
+def test_deepseek_probe_parks_an_account_that_cannot_pay(keys):
+    keys(DEEPSEEK_API_KEY="k")
+    body = json.loads((Path(__file__).parent / "fixtures" / "deepseek-balance-empty.json").read_text())
+    wire(lambda r: json_response(body))
+    stage = DeepSeekStage()
+    probed = stage.probe_quota()
+    assert probed == (0.0, None, "api")
+    assert stage.remaining_override == 0.0
+    assert "balance empty" in stage.blocked_reason
+
+
+def test_deepseek_probe_reports_a_funded_account(keys):
+    keys(DEEPSEEK_API_KEY="k")
+    wire(lambda r: json_response({"is_available": True,
+                                  "balance_infos": [{"total_balance": "7.25"}]}))
+    probed = DeepSeekStage().probe_quota()
+    assert probed is not None and probed[0] == 7.25 and probed[2] == "api"
+
+
+def test_deepseek_probe_of_an_unreachable_api_is_silent(keys):
+    keys(DEEPSEEK_API_KEY="k")
+
+    def handler(request):
+        raise httpx.ConnectError("no route")
+
+    wire(handler)
+    assert DeepSeekStage().probe_quota() is None
+
+
+# --- Tavily / Keenable: implemented, never seen against the real vendor -------------------
+def test_tavily_extract_maps_pages(keys):
+    keys(TAVILY_API_KEY="k")
+    wire(lambda r: json_response({"results": [
+        {"url": "https://t", "raw_content": "text"}, {"url": "https://u", "raw_content": ""}]}))
+    pages = TavilyStage().extract(["https://t", "https://u"])
+    assert pages[0]["content"] == "text"
+    assert pages[1].get("error"), "an empty body is not a page"
+
+
+def test_tavily_probe_without_usage_data_returns_nothing(keys):
+    keys(TAVILY_API_KEY="k")
+    wire(lambda r: json_response({}))
+    stage = TavilyStage()
+    assert stage.probe_quota() is None
+
+
+def test_keenable_extract_reports_units(keys):
+    keys(KEENABLE_API_KEY="k")
+    wire(lambda r: json_response({"content": "text", "url": "https://k"}))
+    pages = KeenableStage().extract(["https://k"])
+    assert pages[0]["content"] == "text"
+
+
+def test_keenable_search_without_results_is_empty_not_success(keys):
+    keys(KEENABLE_API_KEY="k")
+    wire(lambda r: json_response({"results": []}))
+    outcome = KeenableStage().search("q", 3)
+    assert outcome.payload is None
+    assert outcome.failure.kind == types.EMPTY
+
+
+# --- one surprising exception must stay one page's problem --------------------------------
+def test_firecrawl_keeps_the_batch_when_one_page_explodes(keys):
+    """Only StageError was caught; anything else propagated out of the thread pool and threw
+    away the pages that had already come out."""
+    keys(FIRECRAWL_API_KEY="k")
+
+    def handler(request):
+        if b"boom" in request.content:
+            return json_response({"weird": "shape"})  # no data -> KeyError inside the adapter
+        return json_response({"success": True, "data": {"markdown": "# Page", "metadata": {}}})
+
+    wire(handler)
+    pages = FirecrawlStage().extract(["https://a", "https://boom"])
+    assert pages[0].get("content"), pages[0]
+    assert pages[1].get("error"), pages[1]

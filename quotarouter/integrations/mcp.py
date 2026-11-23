@@ -27,13 +27,13 @@ import sys
 from typing import Any, BinaryIO, Optional, TextIO
 
 from .. import routing, types
-from ..integrations.hermes import get_router
+from ..routing import shared_router as get_router
 
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "quotarouter"
-PROTOCOL_VERSION = "2025-06-18"
-DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2025-06-18"          # the newest revision this server implements
+SUPPORTED_PROTOCOLS = (PROTOCOL_VERSION, "2024-11-05")
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -98,10 +98,14 @@ class McpServer:
 
         if method == "initialize":
             params = message.get("params") or {}
-            requested = str(params.get("protocolVersion") or DEFAULT_PROTOCOL_VERSION)
+            requested = str(params.get("protocolVersion") or "")
+            # Answer with a revision we actually implement. Echoing whatever the client asked
+            # claims support for revisions never written — the reference client negotiated
+            # "2025-11-25" against this server and believed it.
+            negotiated = requested if requested in SUPPORTED_PROTOCOLS else PROTOCOL_VERSION
             self.initialized = True
             return _result(message_id, {
-                "protocolVersion": requested if requested else PROTOCOL_VERSION,
+                "protocolVersion": negotiated,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": _version()},
             })

@@ -166,6 +166,44 @@ release and to any incident review.
 - Hermes itself was upgraded (`hermes --version` moved) — the provider contract may have moved;
 - before installing the plugin into a live profile.
 
+## Level 7 — the surface the levels above skipped
+
+A coverage run (`pytest --cov=quotarouter --cov-report=term-missing`) showed which modules the
+first six levels never entered. Each file below exists because something there was uncovered
+*and* costly to get wrong, not because a percentage was missing.
+
+- `test_mcp_protocol.py` — the MCP layer in-process: `initialize` negotiates a supported
+  revision instead of echoing whatever the client asked for, `tools/list` carries schemas,
+  a malformed argument returns `isError` and leaves the server alive, unknown methods and
+  notifications do not crash the loop.
+- `test_cli.py` — every command against a fake router: `status`, `probe`, `selftest`, `prune`,
+  `serve-mcp`, and the honest `fallback: keyless` line when nothing is configured.
+- `test_resilience.py` — a corrupt `ledger.json` (`{not json at all`) must not silently reset
+  the counters, and a half-readable file must keep what it can parse.
+- `test_hermes_provider.py` — the Hermes adapter: `is_available()` stays cheap and offline,
+  `search()` clamps the limit, a total failure returns a readable result instead of raising.
+- `test_state_machine.py` — states that only exist across calls: a vendor refusal on every page
+  parks the stage with the vendor's kind, an origin refusal on every page does not park it,
+  the anonymous tier being disabled, and a second process having spent credits meanwhile.
+- `test_alerts_and_keyless.py` — the alerting layer on its worst day (dead webhook, 500, a
+  half-configured Telegram target, an unparsable cooldown file) and the anonymous tier's
+  protocol edges (a ping-only event stream, an empty answer, the operator killing the tier).
+- `test_jina_reader.py` — the stage that serves every extract by default: header/body split,
+  stub detection, blocked domains staying page-level, rate limits keeping their kind, and every
+  requested URL coming back in order.
+- `test_stage_base.py` — parallel fetching preserving the caller's order, a single worker
+  staying sequential, and an adapter that raises a bare exception being parked as `transient`
+  instead of killing the call.
+
+### What the coverage run itself found
+
+Writing these tests exposed a defect no level above could see: `http_client.get/post` did not
+translate `httpx` transport errors into `StageError`. Every `except errors.StageError` branch in
+every stage was therefore dead code for real network problems — a vendor that had gone dark
+looked like one bad page, and it was dialed again on the next call. The translation now happens
+in one place (see `http_client._call`), and `test_jina_reader.py` pins it: a timeout is a
+`transient` page error, so the router can pause the stage instead of re-dialing it.
+
 ## What these levels do not cover
 
 - Load behaviour and concurrent calls (vendor QPS limits).

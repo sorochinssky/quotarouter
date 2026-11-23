@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 import httpx
 
+from . import errors
+
 _client: Optional[httpx.Client] = None
 
 
@@ -30,14 +32,30 @@ def client() -> httpx.Client:
     return _client
 
 
+def _call(what: str, function, *args, **kwargs) -> httpx.Response:
+    """Turn a transport failure into the package's own error type.
+
+    Every stage catches `StageError` and decides whether to pause itself, and every one of those
+    branches was dead code for real network problems: `httpx.ReadTimeout` and `ConnectError`
+    arrived as bare exceptions, so a vendor that had gone dark looked like one bad page and was
+    dialed again on the next call, and the one after that.
+    """
+    try:
+        return function(*args, **kwargs)
+    except httpx.TimeoutException as exc:
+        raise errors.TransientError(f"{what} timed out: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise errors.TransientError(f"{what} failed: {type(exc).__name__}: {exc}") from exc
+
+
 def get(url: str, *, headers: dict[str, str] | None = None, params: dict[str, Any] | None = None,
         timeout: float = 25.0) -> httpx.Response:
-    return client().get(url, headers=headers, params=params, timeout=timeout)
+    return _call("GET " + url, client().get, url, headers=headers, params=params, timeout=timeout)
 
 
 def post(url: str, *, headers: dict[str, str] | None = None, json: Any = None,
          timeout: float = 25.0) -> httpx.Response:
-    return client().post(url, headers=headers, json=json, timeout=timeout)
+    return _call("POST " + url, client().post, url, headers=headers, json=json, timeout=timeout)
 
 
 def header_map(response: httpx.Response) -> dict[str, str]:

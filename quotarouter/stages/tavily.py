@@ -62,14 +62,22 @@ class TavilyStage(Stage):
 
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
         data = self._post("/extract", {"urls": urls, "extract_depth": "basic"}, 45.0)
-        results = []
+        by_url: dict[str, dict[str, Any]] = {}
         for item in data.get("results") or []:
             content = str(item.get("raw_content") or item.get("content") or "")
+            url = str(item.get("url") or "")
             if content.strip():
-                results.append(types.document(str(item.get("url") or ""), str(item.get("title") or ""), content))
+                by_url[url] = types.document(url, str(item.get("title") or ""), content)
+            else:
+                by_url[url] = types.page_error(url, "tavily: empty page")
         for bad in data.get("failed_results") or []:
-            results.append(types.page_error(str(bad.get("url") or ""), str(bad.get("error") or "tavily: failed")))
-        return results
+            url = str(bad.get("url") or "")
+            by_url[url] = types.page_error(url, str(bad.get("error") or "tavily: failed"))
+        # A requested URL missing from the answer must still come back as a page with an error:
+        # silently returning fewer pages than asked makes every caller that zips the two lists
+        # mis-attribute the rest.
+        return [by_url.get(url) or types.page_error(url, "tavily: no answer for this URL")
+                for url in urls]
 
     def probe_quota(self) -> Optional[tuple[float, Optional[float], str]]:
         resp = http_client.get(f"{API}/usage", headers=self._headers(), timeout=10.0)

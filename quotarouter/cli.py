@@ -145,7 +145,8 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     url = args.url
     extract = router.run_extract([url])
     entry = (extract.payload or [{}])[0]
-    good = bool(entry.get("content"))
+    # Strip first: a page of spaces passed as "ok" — the same stub that EMPTY exists to catch.
+    good = bool(str(entry.get("content") or "").strip())
     print(f"extract {url}: {'ok' if good else 'FAILED'} "
           f"({len(entry.get('content') or '')} chars)")
     print(f"  chain: {extract.chain_text()}")

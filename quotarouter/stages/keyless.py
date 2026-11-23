@@ -68,8 +68,8 @@ def _sse_result(text: str) -> dict[str, Any]:
     for answer in answers:
         if "result" in answer or "error" in answer:
             return answer
-    if answers:
-        return answers[-1]
+    # Anything else is a keep-alive (`event: ping`) or a progress note, not an answer. Returning
+    # one of those would look like an empty page and pause the tier with the wrong reason.
     raise errors.TransientError("keyless MCP sent an event stream with no JSON-RPC answer")
 
 

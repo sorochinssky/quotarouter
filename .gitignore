@@ -8,3 +8,5 @@ build/
 state/
 e2e-report.json
 /reviews/
+.coverage
+htmlcov/

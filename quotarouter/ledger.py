@@ -118,11 +118,27 @@ class Ledger:
                 return
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
-                vendors = raw.get("vendors", {})
-                self._state = {name: _state_from_dict(name, data) for name, data in vendors.items()}
             except Exception as exc:  # a corrupted ledger must never break search
                 logger.warning("quotarouter: ledger %s unreadable (%s); starting fresh", self.path, exc)
                 self._state = {}
+                return
+            vendors = raw.get("vendors") if isinstance(raw, dict) else None
+            if not isinstance(vendors, dict):
+                logger.warning("quotarouter: ledger %s has no vendor map; starting fresh", self.path)
+                self._state = {}
+                return
+            # One broken entry must not discard the others. All-or-nothing meant a single bad
+            # record wiped every charge and every pause: the router then believed a spent vendor
+            # still had quota, and a parked one looked healthy.
+            self._state = {}
+            for name, data in vendors.items():
+                if not isinstance(data, dict):
+                    logger.warning("quotarouter: ledger entry %r is not an object; ignored", name)
+                    continue
+                try:
+                    self._state[name] = _state_from_dict(name, data)
+                except Exception as exc:
+                    logger.warning("quotarouter: ledger entry %r unreadable (%s); ignored", name, exc)
 
     def _file_signature(self) -> Optional[tuple[int, int]]:
         try:
