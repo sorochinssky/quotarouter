@@ -236,6 +236,26 @@ configured order, so the tests are split the same way: the file, the decision, t
 - `test_mcp_stdio.py` — the real stdio transport in a subprocess: `initialize`, the optional
   properties in `tools/list` (present, not required), a bad chain returning `isError` with the list
   of real stages, and `quota_status` still answering in the same session.
+- `test_integrations.py` — the two surfaces that meet a host: the Hermes adapter (a key written
+  into the profile is visible, a broken host helper degrades to "no key", one router per process)
+  and `serve_stdio` over raw bytes, including a stream that closes its buffer the way a real pipe
+  does. Also the argument handling a model gets wrong: a junk `limit`, and a refused chain coming
+  back as a tool error with the list of real chains.
+- `test_cli_ops.py` — the commands an operator types when something is already wrong: `status`
+  naming a chain entry the file dropped, `chains` with nothing configured, `call` failing with a
+  reason and exit 1, `prune` reporting kept/dropped lines, `daemon` passing the interval through,
+  `schedule` choosing a cron line for three interval shapes, the pause column for a machine pause
+  with no deadline, and Ctrl-C becoming 130 instead of a traceback.
+- `test_degenerate_paths.py` — the files that someone else broke: a ledger with no vendor map, one
+  unreadable entry next to a valid one, a nested transaction, a save that cannot replace its
+  temporary file, a rotation that cannot happen, a prune that cannot write, a probe that raises, a
+  quota window that rolled, a stage that returns nothing, an answer about a different URL, and five
+  vendors answering with HTML instead of JSON.
+- `test_edge_cases.py` — the tail: `recheck` in both output modes, counters a hand-edited ledger
+  cannot justify (now dropped by name, see `_state_from_dict`), the keyless tier covering only the
+  pages nobody delivered, an alert path that raises, and the vendor edges (tavily's
+  `failed_results`, firecrawl's unparseable billing date, jina's transport bug, deepseek's 5xx
+  probe, keyless SSE frames).
 - `test_docs_examples.py` — the operator guide is executable: every TOML block parses, every fenced
   example is a usable chain, the shipped `docs/chains.example.toml` loads without a problem, and the
   commands in the guide run with no credentials (which also proves they dial nothing).

@@ -356,7 +356,7 @@ python3 -m pytest -q                 # 288 tests, offline, no network, no keys
 python3 -m pytest -m live -q         # real vendors, ~$0.01, spends quota
 python3 -m pytest -m e2e -q          # end-to-end inside a real Hermes, ~$0.01
 python3 tests/e2e/harness.py         # the same without pytest, writes e2e-report.json
-python3 -m pytest -q --cov=quotarouter --cov-report=term-missing   # 93% line coverage
+python3 -m pytest -q --cov=quotarouter --cov-report=term-missing   # 100% line coverage
 ```
 
 Eight levels:

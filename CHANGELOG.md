@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-11-23
+
+### Fixed
+
+- A ledger entry whose counters are not numbers is dropped by name and reported, instead of being
+  loaded as-is. Before this, a file edited by hand (or truncated by a full disk) could hand the
+  router a list where it expected a float and fail inside `charge()` — halfway through a call, where
+  it looks like a vendor outage. The other entries are kept, as with any malformed record.
+- `jina` had a branch after `_raise_for_status` that could never run; the page-level error now
+  comes from the classifier itself.
+
+### Changed
+
+- Line coverage is 100%, up from 94%: the offline suite now exercises every branch of the CLI,
+  the integrations, the ledger's corruption paths, the retention edges and each vendor's
+  non-JSON and empty-answer handling. `pytest -q` runs 498 tests.
+
 ## [Unreleased]
 
 ### Added

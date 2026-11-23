@@ -359,9 +359,37 @@ class Ledger:
             self._save()
 
 
+_COUNTED = ("used", "limit", "reset_at", "paused_until", "last_success", "last_failure")
+_COUNTED_OPTIONAL = frozenset({"reset_at", "paused_until", "last_success", "last_failure"})
+
+
 def _state_from_dict(vendor: str, data: dict[str, Any]) -> VendorState:
+    """One vendor's record, with its counters checked.
+
+    A record is written by this package, but a file can still be edited, truncated by a full disk
+    or written by an older version. A counter that is not a number must be caught here, while the
+    entry can still be dropped and named; left alone it fails later, inside `charge`, halfway
+    through a call that then looks like a vendor outage.
+    """
     known = {f for f in VendorState.__dataclass_fields__}  # type: ignore[attr-defined]
     clean = {k: v for k, v in (data or {}).items() if k in known and k != "vendor"}
+    for field in _COUNTED:
+        if field not in clean:
+            continue
+        value = clean[field]
+        if value is None:
+            if field in _COUNTED_OPTIONAL:
+                continue
+            raise ValueError(f"{field} is null")
+        try:
+            clean[field] = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field}={value!r} is not a number") from None
+    if "consecutive_failures" in clean:
+        try:
+            clean["consecutive_failures"] = int(clean["consecutive_failures"])
+        except (TypeError, ValueError):
+            raise ValueError("consecutive_failures is not an integer") from None
     state = VendorState(vendor=vendor, **clean)
     if state.pause_kind and not state.pause_origin:
         # Written before the field existed. Keep the record, and let `pause_origin_of` decide

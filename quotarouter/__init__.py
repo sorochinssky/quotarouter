@@ -22,6 +22,6 @@ from __future__ import annotations
 from .config import Settings, settings
 from .routing import Router, RouteResult, format_failure
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = ["Router", "RouteResult", "Settings", "settings", "format_failure", "__version__"]

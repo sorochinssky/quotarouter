@@ -132,7 +132,7 @@ class JinaStage(Stage):
                 self._raise_for_status(resp.status_code, resp.text or "", headers)
             except errors.StageError as exc:
                 return types.page_error(url, f"jina: {exc.kind}: {exc}", kind=exc.kind)
-            return types.page_error(url, f"jina: HTTP {resp.status_code}", kind=types.BAD_PAGE)
+            raise AssertionError("_raise_for_status returned for a >=400 response")  # pragma: no cover
         title, source, body = _split_reader_output(resp.text or "")
         if looks_like_stub(body, min_chars):
             return types.page_error(url, f"jina: page looks blocked or empty ({len(body)} chars)")
