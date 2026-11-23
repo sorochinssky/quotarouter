@@ -2,7 +2,8 @@
 
 `route` and `chains` must never dial a vendor — they exist to answer a question before spending
 anything. `call` is the library API in one command, and its exit codes separate "you asked for
-something impossible" (2) from "nobody could serve it" (1).
+something impossible" (2) from "nobody could serve it" (1); `route` answers 2 for the same refusal,
+because it is another view of the same decision.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def test_route_resolves_a_named_chain_without_dialing(env, capsys):
 
 
 def test_route_refuses_an_unknown_chain_and_says_so(env, capsys):
-    assert cli.cmd_route(_args("route", "--chain", "nope")) == 1
+    assert cli.cmd_route(_args("route", "--chain", "nope")) == 2
     out = capsys.readouterr().out
 
     assert "refused" in out and "one" in out

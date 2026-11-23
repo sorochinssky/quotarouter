@@ -10,6 +10,9 @@ run before every push; a green local gate is what "done" means here.
    anything else.
 2. `python3 -m pytest -m "live and not e2e" -q` — live vendors. Needs real keys in the
    environment; skip only if keys are genuinely unavailable, and say so in the commit message.
+   The script does not read a dotenv file for you: export them in the same shell
+   (`set -a; . ~/.hermes/.env; set +a`) or `--live` will run four red end-to-end tests whose real
+   cause is one missing key. The script now prints that hint itself when it sees no key.
 3. `python3 -m pytest -m e2e -q` — end-to-end through a real Hermes install
    (`tests/e2e/harness.py` builds a throwaway `HERMES_HOME`).
 4. `hermes plugins validate hermes_plugin` — catalog-admission gate. **Must say "Validation

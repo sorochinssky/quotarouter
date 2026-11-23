@@ -30,8 +30,12 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 logger = logging.getLogger(__name__)
 
 #: The setting that names an alternative file, and the setting that carries a one-line shorthand.
-FILE_ENV = "QUOTAROUTER_CHAINS_FILE"
-SHORTHAND_ENV = "QUOTAROUTER_CHAINS"
+#: The names callers pass to the resolver, which owns the ``QUOTAROUTER_`` prefix (see
+#: ``config._env``). The full variable names appear only in messages.
+SHORTHAND_SETTING = "CHAINS"
+FILE_SETTING = "CHAINS_FILE"
+#: Only for messages: a reader of the log needs the variable it can actually set.
+SHORTHAND_ENV = "QUOTAROUTER_" + SHORTHAND_SETTING
 DEFAULT_FILE = "~/.config/quotarouter/chains.toml"
 
 #: Accepted chain-level budget values. `free` means "this chain does not spend money"; the
@@ -237,8 +241,8 @@ def load(resolve: Callable[[str], str], known: Iterable[str],
     unparsable one is reported once and leaves the default order in charge: a configuration
     problem must not be an outage.
     """
-    shorthand = (resolve(SHORTHAND_ENV) or "").strip()
-    configured_path = path or Path(resolve(FILE_ENV) or DEFAULT_FILE).expanduser()
+    shorthand = (resolve(SHORTHAND_SETTING) or "").strip()
+    configured_path = path or Path(resolve(FILE_SETTING) or DEFAULT_FILE).expanduser()
     if shorthand:
         if configured_path.exists():
             logger.warning(

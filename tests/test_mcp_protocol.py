@@ -259,3 +259,19 @@ def test_serve_writes_nothing_for_notifications(server):
     out = io.StringIO()
     engine.serve(io.StringIO('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'), out)
     assert out.getvalue() == ""
+
+
+# --- what the model is told ---------------------------------------------------------------
+def test_the_tools_say_that_a_call_may_pin_and_that_pinning_can_cost_money():
+    """The model chooses from the description: if it does not say so, the feature is unreachable."""
+    tools = {tool["name"]: tool for tool in mcp.TOOLS}
+    for name in ("web_search", "web_extract"):
+        tool = tools[name]
+        text = tool["description"]
+        assert "stages" in text and "chain" in text, name
+        assert "spends money" in text, f"{tool['name']}: a paid pin must be stated, not implied"
+        properties = tool["inputSchema"]["properties"]
+        required = tool["inputSchema"].get("required", [])
+        for option in ("stages", "chain", "fallback", "force", "budget", "max_cost_usd"):
+            assert option in properties, f"{name} is missing {option}"
+            assert option not in required, f"{name}: {option} is optional and must not be required"

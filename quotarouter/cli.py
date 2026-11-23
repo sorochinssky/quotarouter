@@ -208,7 +208,9 @@ def cmd_route(args: argparse.Namespace) -> int:
                   else "  unusable: nothing can serve this call")
         for skip in skipped:
             print(f"  skip {skip.stage}: {skip.reason}")
-    return 1 if failed else 0
+    # Same code as `call`: 2 means "you asked for something impossible", and `route` and `call` are
+    # two views of one decision, so they must not disagree about what the exit code means.
+    return 2 if failed else 0
 
 
 def cmd_call(args: argparse.Namespace) -> int:

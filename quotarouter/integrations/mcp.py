@@ -102,9 +102,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "web_extract",
         "description": (
-            "Fetch clean page text for one or more URLs through the same chain "
-            "(a keyless reader first, paid scrapers only when it fails). Optional: pin the "
-            "providers for this one call (`stages` or `chain`) and set a budget."
+            "Fetch clean page text for one or more URLs through a quota-aware chain of "
+            "providers. Free allowances are spent first. Optional: pin the providers for this "
+            "one call (`stages` or `chain`) and set a budget — pinning a paid provider spends "
+            "money."
         ),
         "inputSchema": {
             "type": "object",

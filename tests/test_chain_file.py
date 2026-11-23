@@ -18,10 +18,19 @@ from quotarouter import chains, config
 KNOWN = {"exa", "firecrawl", "jina", "deepseek", "keyless"}
 
 
+def _settings_resolver(settings: dict[str, str]):
+    """A resolver with the same contract as `config._env`: it owns the QUOTAROUTER_ prefix.
+
+    The fake used to be keyed by full variable names, which hid a double-prefix bug: the loader
+    passed "QUOTAROUTER_CHAINS" and the resolver looked for "QUOTAROUTER_QUOTAROUTER_CHAINS".
+    """
+    return lambda key: settings.get(f"QUOTAROUTER_{key}", "")
+
+
 def _load(tmp_path, text: str, name: str = "chains.toml"):
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
-    return chains.load(lambda key: "", KNOWN, path=path)
+    return chains.load(_settings_resolver({}), KNOWN, path=path)
 
 
 GOOD = """
@@ -146,7 +155,7 @@ def test_the_shorthand_replaces_the_file_and_says_so(tmp_path, caplog):
     settings = {"QUOTAROUTER_CHAINS": "quick=exa;bad-segment"}
 
     with caplog.at_level(logging.WARNING):
-        loaded = chains.load(lambda key: settings.get(key, ""), KNOWN, path=path)
+        loaded = chains.load(_settings_resolver(settings), KNOWN, path=path)
 
     assert loaded.source == "shorthand"
     assert loaded.names() == ("quick",), "the file's names must not survive the replacement"
@@ -193,3 +202,16 @@ def test_override_is_allowed_by_default(monkeypatch):
     monkeypatch.delenv("QUOTAROUTER_ALLOW_CHAIN_OVERRIDE", raising=False)
     config.reset_settings_for_tests()
     assert config.settings().allow_chain_override is True
+
+
+def test_the_shorthand_is_read_through_the_settings_prefix(monkeypatch, tmp_path):
+    """The wiring, not the parser: an operator exports the variable and the chains appear."""
+    monkeypatch.setenv("QUOTAROUTER_CHAINS", "quick=exa,firecrawl")
+    monkeypatch.setenv("QUOTAROUTER_CHAINS_FILE", str(tmp_path / "absent.toml"))
+    config.reset_settings_for_tests()
+    try:
+        loaded = config.Settings().chains
+        assert loaded.source == "shorthand"
+        assert loaded.names() == ("quick",), "a double prefix would silently lose the operator's chains"
+    finally:
+        config.reset_settings_for_tests()

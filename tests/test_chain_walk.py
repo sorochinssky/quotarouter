@@ -158,6 +158,31 @@ def test_a_forced_call_still_charges(make):
     assert router.ledger.get("exa").used == pytest.approx(1.0)
 
 
+def test_a_custom_call_is_accounted_like_a_default_one(tmp_path, monkeypatch):
+    """A pinned chain changes *who* is dialed, not how a call is charged or parked."""
+    from quotarouter import errors
+
+    monkeypatch.setenv("QUOTAROUTER_KEYLESS_LAST_RESORT", "0")
+    monkeypatch.setenv("QUOTAROUTER_ALLOW_KEYLESS", "0")
+
+    def accounting(label, **resolve_kwargs):
+        state_dir = tmp_path / label
+        stage = Fake("exa", fail=errors.QuotaError("HTTP 402 out of credits"))
+        settings = config.Settings(search_order=("exa",), state_dir=state_dir)
+        router = routing.Router(settings=settings, stages={"exa": stage},
+                                ledger=ledger_mod.Ledger(state_dir / "ledger.json"))
+        result = router.run_search("q", 3, **resolve_kwargs)
+        state = router.ledger.get("exa")
+        return [not result.ok, state.used, state.limit, state.pause_kind]
+
+    default = accounting("default")
+    custom = accounting("custom", stages=["exa"])
+
+    assert default[0] and custom[0], "both calls must fail: the only stage is out of quota"
+    assert default[1:] == custom[1:], (
+        "same charge, same limit, same pause kind — a custom call is not a special case in the ledger")
+
+
 # --- the audit trail ----------------------------------------------------------------------
 def test_a_default_call_is_marked_default(make):
     router = make(order=("exa",), exa=Fake("exa"))

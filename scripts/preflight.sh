@@ -49,6 +49,11 @@ fi
 
 if [ "${1:-}" = "--live" ]; then
   step "live vendors"
+if [ -z "${EXA_API_KEY:-}${FIRECRAWL_API_KEY:-}" ]; then
+  # A live run without keys is not a code failure: the suites skip and the e2e harness reports
+  # "degradation_without_keys". Say what to do instead of leaving four red tests to decode.
+  printf 'no vendor key in the environment: live steps need them (set -a; . ~/.hermes/.env; set +a)\n'
+fi
   "$PY" -m pytest -m "live and not e2e" -q; check $? "live vendors"
   step "end to end"
   "$PY" -m pytest -m e2e -q; check $? "end to end"
