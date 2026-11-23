@@ -181,6 +181,11 @@ QUOTAROUTER_SEARCH_ORDER=exa,firecrawl,deepseek
 QUOTAROUTER_EXTRACT_ORDER=jina,firecrawl,exa
 ```
 
+One name is a valid chain (`QUOTAROUTER_SEARCH_ORDER=exa` means "exa or nothing"), a stage that
+cannot do the capability is skipped with that reason, and a misspelled name is reported at
+startup instead of silently shortening the chain. The order is per process, not per call: the
+router owns the choice so the ledger stays correct across the CLI, the MCP server and Hermes.
+
 Why these defaults: Exa gives roughly 1 400 searches for $10; Firecrawl draws on one shared
 pool of 1 000 credits (2 credits per search, 1 per page); Jina Reader is free and therefore
 goes first on extract. Measurements are in `docs/vendor-probes.md`.

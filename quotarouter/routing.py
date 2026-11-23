@@ -117,6 +117,25 @@ class Router:
         self.ledger = ledger or ledger_mod.Ledger(self.settings.ledger_path)
         self.clock = clock
         self._last_probe: dict[str, float] = {}
+        self._warn_about_unknown_stages()
+
+    def _warn_about_unknown_stages(self) -> None:
+        """A typo in the order is a silently shorter chain, and a shorter chain fails later.
+
+        `QUOTAROUTER_SEARCH_ORDER=exa,fircrawl` used to cost nothing at startup and everything
+        at the first 402: the misspelled name showed up as a skip reason in a log nobody reads
+        until the call has already degraded. The order is data, so the data gets validated.
+        """
+        configured = list(self.settings.search_order) + list(self.settings.extract_order)
+        unknown = sorted({name for name in configured if name not in self.stages})
+        if unknown:
+            logger.warning(
+                "quotarouter: %s in the stage order %s not a stage this build has (%s); "
+                "the chain is shorter than it looks",
+                ", ".join(repr(name) for name in unknown),
+                "is" if len(unknown) == 1 else "are",
+                ", ".join(sorted(self.stages)),
+            )
 
     def now(self) -> float:
         """The router's clock — tests inject one, the CLI prints dates against it."""
