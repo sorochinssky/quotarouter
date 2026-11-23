@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import alerts, config, ledger as ledger_mod, retention
+from . import routing
 from .routing import shared_router as get_router
 
 
@@ -51,13 +52,20 @@ def cmd_status(args: argparse.Namespace) -> int:
             "source": state.source,
             "search": bool(stage and stage.capability.search),
             "extract": bool(stage and stage.capability.extract),
+            "funding": getattr(stage, "funding", "free") if stage else "?",
         })
 
+    chains = settings.chains
     if args.json:
         print(json.dumps({
             "state_dir": str(settings.state_dir),
             "search_order": list(settings.search_order),
             "extract_order": list(settings.extract_order),
+            "chains": chains.as_dict(),
+            "chains_source": chains.source,
+            "chains_path": chains.path,
+            "chains_problems": [problem.as_line() for problem in chains.problems],
+            "allow_chain_override": settings.allow_chain_override,
             "vendors": rows,
         }, ensure_ascii=False, indent=2))
         return 0
@@ -65,6 +73,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"state: {settings.state_dir}")
     print(f"search order : {', '.join(settings.search_order)}")
     print(f"extract order: {', '.join(settings.extract_order)}")
+    print(f"chains       : {_chains_line(chains)}")
+    if chains.problems:
+        for problem in chains.problems:
+            print(f"  dropped {problem.as_line()}")
     print()
     header = f"{'vendor':10} {'cred':4} {'left':>12} {'limit':>9} {'unit':8} {'window':22} {'paused':22} {'src':6}"
     print(header)
@@ -111,22 +123,138 @@ def cmd_recheck(args: argparse.Namespace) -> int:
     return 0
 
 
+def _chains_line(chains) -> str:
+    if not chains.specs:
+        return f"none (from {chains.source}, {chains.path or 'no path'})"
+    names = ", ".join(chains.names())
+    return f"{names} (from {chains.source}, {chains.path})"
+
+
+def cmd_chains(args: argparse.Namespace) -> int:
+    """What the file actually gave — including the entries it dropped, and why.
+
+    Without this, diagnosing a chain configuration is guesswork: the file looks right, the name is
+    missing, and there is no command that says which of the two is the problem.
+    """
+    settings = config.settings(refresh=True)
+    chains = settings.chains
+    if args.json:
+        print(json.dumps({
+            "source": chains.source,
+            "path": chains.path,
+            "chains": chains.as_dict(),
+            "problems": [problem.as_line() for problem in chains.problems],
+            "allow_chain_override": settings.allow_chain_override,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    print(f"source: {chains.source}")
+    print(f"path  : {chains.path or '-'}")
+    if not chains.specs:
+        print("no named chains")
+    for name, spec in chains.specs.items():
+        caps = ", ".join(spec.capabilities()) or "nothing"
+        budget = spec.budget or ("max $%g" % spec.max_cost_usd if spec.max_cost_usd is not None
+                                 else "no budget")
+        print(f"  {name}: {caps} | {budget} | {'strict' if spec.strict else 'falls back'}")
+        if spec.description:
+            print(f"      {spec.description}")
+        for capability in ("search", "extract"):
+            stages = spec.stages_for(capability)
+            if stages:
+                print(f"      {capability}: {' -> '.join(stages)}")
+    for problem in chains.problems:
+        print(f"  dropped {problem.as_line()}")
+    print(f"per-call overrides: {'allowed' if settings.allow_chain_override else 'disabled'}")
+    return 0
+
+
 def cmd_route(args: argparse.Namespace) -> int:
     router = get_router()
+    # `getattr` rather than attribute access: `route` is also called from code that builds its own
+    # namespace (a test, another tool), and a missing flag must not be an AttributeError.
+    stages = [part.strip() for part in (getattr(args, "stages", None) or "").split(",")
+              if part.strip()] or None
+    chain = getattr(args, "chain", None)
+    fallback = bool(getattr(args, "fallback", False))
+    budget = getattr(args, "budget", None)
+    max_cost = getattr(args, "max_cost", None)
+    failed = False
     for capability in ("search", "extract"):
-        print(f"{capability}:")
-        usable, skipped = router.candidates(capability)
+        try:
+            resolved = router.resolve(
+                capability, stages=stages, chain=chain, fallback=fallback,
+                budget=budget, max_cost_usd=max_cost)
+        except ValueError as exc:
+            print(f"{capability}: refused — {exc}")
+            failed = True
+            continue
+        print(f"{capability}: {resolved.mode} "
+              f"({' -> '.join(resolved.names) or 'nothing'})"
+              + (f" then {' -> '.join(resolved.fallback_names)}" if resolved.fallback_names else "")
+              + (f" [budget={resolved.budget}]" if resolved.budget else "")
+              + (f" [max ${resolved.max_cost_usd:g}]" if resolved.max_cost_usd is not None else "")
+              + ("" if resolved.allow_keyless else " [no anonymous tier]"))
+        # A page count of 1 keeps the estimate honest for "what would one call cost".
+        usable, skipped = router.candidates(capability, resolved)
         for index, stage in enumerate(usable):
             print(f"  {'usable' if index == 0 else 'next  '}: {stage.name}")
         if not usable:
             # The anonymous tier is not a candidate (it has no quota to spend), but it will serve
             # the call — saying "unusable" while the call succeeds is a lie the operator acts on.
-            settings = config.settings(refresh=True)
-            fallback = router.stages.get("keyless") if settings.keyless_last_resort else None
-            print("  fallback: keyless (anonymous tier)" if fallback is not None
+            anonymous = (router.stages.get("keyless")
+                         if resolved.allow_keyless and config.settings(refresh=True).keyless_last_resort
+                         else None)
+            print("  fallback: keyless (anonymous tier)" if anonymous is not None
                   else "  unusable: nothing can serve this call")
-        for vendor, reason in router.skips(capability):
-            print(f"  skip {vendor}: {reason}")
+        for skip in skipped:
+            print(f"  skip {skip.stage}: {skip.reason}")
+    return 1 if failed else 0
+
+
+def cmd_call(args: argparse.Namespace) -> int:
+    """Run one call through a chain named on the command line.
+
+    The library API in one command: an explicit list or a named chain, a budget, and `--force` for
+    a single diagnostic attempt against a parked stage. Exit 2 is a refusal (the request was
+    wrong), exit 1 is a call that nobody could serve.
+    """
+    router = get_router()
+    stages = [part.strip() for part in (args.stages or "").split(",") if part.strip()] or None
+    options = dict(stages=stages, chain=args.chain, fallback=args.fallback,
+                   budget=args.budget, max_cost_usd=args.max_cost, ignore_pause=args.force)
+    try:
+        if args.capability == "search":
+            result = router.run_search(" ".join(args.target), args.limit, **options)
+        else:
+            result = router.run_extract(list(args.target), **options)
+    except ValueError as exc:
+        print(f"refused: {exc}")
+        return 2
+    router.log_route(args.capability, result, {"source": "cli"})
+
+    if args.json:
+        print(json.dumps({
+            "ok": result.ok,
+            "capability": args.capability,
+            "served_by": result.stage or None,
+            "chain_mode": result.chain_mode,
+            "requested": list(result.requested),
+            "budget": result.budget,
+            "max_cost_usd": result.max_cost_usd,
+            "forced": result.forced,
+            "delivered": result.delivered or None,
+            "chain": result.chain_text(),
+            "payload": result.payload,
+        }, ensure_ascii=False, indent=2))
+        return 0 if result.ok else 1
+
+    if not result.ok:
+        print(routing.format_failure(result, args.capability))
+        return 1
+    print(f"{args.capability}: served by {result.stage} ({result.chain_mode}"
+          + (f", budget={result.budget}" if result.budget else "")
+          + (", forced" if result.forced else "") + ")")
+    print(f"  chain: {result.chain_text()}")
     return 0
 
 
@@ -396,7 +524,31 @@ def build_parser() -> argparse.ArgumentParser:
     alert_test.set_defaults(func=cmd_alert_test)
 
     route = sub.add_parser("route", help="show which vendor a call would use now, and why not others")
+    route.add_argument("--stages", default=None, help="comma-separated stage list to resolve")
+    route.add_argument("--chain", default=None, help="named chain from the configuration file")
+    route.add_argument("--fallback", action="store_true", help="continue into the default order")
+    route.add_argument("--budget", default=None, help="'free' to forbid spending money")
+    route.add_argument("--max-cost", dest="max_cost", type=float, default=None,
+                       help="dollar ceiling for one call")
     route.set_defaults(func=cmd_route)
+
+    chains = sub.add_parser("chains", help="show the named chains the configuration produced")
+    chains.add_argument("--json", action="store_true")
+    chains.set_defaults(func=cmd_chains)
+
+    call = sub.add_parser("call", help="run one call through a chain you name")
+    call.add_argument("capability", choices=["search", "extract"])
+    call.add_argument("target", nargs="+", help="a query, or one or more URLs")
+    call.add_argument("--limit", type=int, default=5)
+    call.add_argument("--stages", default=None, help="comma-separated stage list")
+    call.add_argument("--chain", default=None, help="named chain from the configuration file")
+    call.add_argument("--fallback", action="store_true")
+    call.add_argument("--budget", default=None)
+    call.add_argument("--max-cost", dest="max_cost", type=float, default=None)
+    call.add_argument("--force", action="store_true",
+                      help="one attempt against a parked stage (it is charged and re-parked)")
+    call.add_argument("--json", action="store_true")
+    call.set_defaults(func=cmd_call)
 
     disable = sub.add_parser("disable", help="park a vendor by hand")
     disable.add_argument("vendor")

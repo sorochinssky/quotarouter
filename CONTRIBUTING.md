@@ -74,14 +74,28 @@ What to know before changing one:
 - **`keyless` is not in the chains.** The anonymous tier is a fallback that serves when nothing in
   the chain could, and it is switched by `QUOTAROUTER_ALLOW_KEYLESS` / `KEYLESS_LAST_RESORT`
   rather than by position.
-- **The order is not per call.** There is no way to ask one request for a specific vendor; the
-  router owns the choice so the ledger stays correct across processes. If you need a different
-  chain for a workload, run it in a process with a different environment or state directory.
+- **The order is per process; a call may still name its own chain.** `run_search(query, limit,
+  stages=[...])`, `chain="name"`, `fallback=True`, `budget="free"`, `max_cost_usd=...`,
+  `ignore_pause=True` — and the same optional arguments on the MCP tools. Without them the call
+  walks the configured order, byte for byte as before.
+- **A named chain lives in a file, not in one variable.** `~/.config/quotarouter/chains.toml`
+  (`QUOTAROUTER_CHAINS_FILE`), because a chain is a pair of lists plus a description and a budget.
+  `QUOTAROUTER_CHAINS` remains as a one-line shorthand and replaces the file when set. Format and
+  examples: `docs/chains.md`; the shipped example is `docs/chains.example.toml`, and a test loads it.
+- **A custom chain is strict.** No silent continuation into the default order, no anonymous tier
+  behind it. `fallback=True` or `strict = false` asks for the tail explicitly.
+- **A chain's budget cannot be loosened by a caller.** The stricter of (chain, call) applies: a name
+  that says `free` is a promise, not a default.
+- **A dollar ceiling cannot price vendor credits.** A credit-metered stage under `max_cost_usd` is
+  held to its free grant instead. Do not add an exchange rate: the router has no tariff and must not
+  invent one.
 - **Order is not priority by quality, only by spend.** Put the free allowance you have most of
   first, and the paid balance last.
 
 `quotarouter route` prints the decision — usable stages in order, then every skip with its reason
-— so a chain question is answerable without a live call.
+— so a chain question is answerable without a live call. `quotarouter route --chain <name>`,
+`--stages a,b` and `--budget free` resolve the chain a call would use; `quotarouter chains` prints
+what the file produced and what it dropped.
 
 ## Rules enforced by tests, not by review
 

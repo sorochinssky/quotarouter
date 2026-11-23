@@ -53,6 +53,16 @@ class RouteResult:
     payload: Any = None
     stage: str = ""
     attempts: list[RouteAttempt] = field(default_factory=list)
+    # What this call was asked for, carried here rather than through every caller: the audit line
+    # is written by whoever holds the result, and it must not be able to describe the wrong chain.
+    chain_mode: str = "default"                 # default | custom | named
+    requested: list[str] = field(default_factory=list)
+    budget: Optional[str] = None                # "free" or None
+    max_cost_usd: Optional[float] = None
+    forced: bool = False
+    # For extract: how many pages each stage actually delivered, because one call can legitimately
+    # end with three pages from one vendor and two from another — a single `served_by` would lie.
+    delivered: dict[str, int] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -79,6 +89,194 @@ class RouteResult:
 class TriggerReason:
     stage: str
     reason: str
+
+
+MODE_DEFAULT = "default"
+MODE_CUSTOM = "custom"
+MODE_NAMED = "named"
+BUDGET_FREE = "free"
+BUDGETS = (BUDGET_FREE,)
+
+
+@dataclass(frozen=True)
+class ResolvedChain:
+    """The one ordered list a call will walk, decided before anything is dialed."""
+
+    capability: str
+    mode: str = MODE_DEFAULT
+    names: tuple[str, ...] = ()
+    fallback_names: tuple[str, ...] = ()
+    allow_keyless: bool = True
+    budget: Optional[str] = None
+    max_cost_usd: Optional[float] = None
+    requested: tuple[str, ...] = ()
+    ignore_pause: bool = False
+
+    def order(self) -> tuple[str, ...]:
+        return self.names + self.fallback_names
+
+
+def _dedupe(names: Any) -> tuple[str, ...]:
+    seen: list[str] = []
+    for name in names or ():
+        key = str(name).strip().lower()
+        if key and key not in seen:
+            seen.append(key)
+    return tuple(seen)
+
+
+def _validate_stages(value: Any, available: dict[str, "Stage"], capability: str,
+                     where: str) -> tuple[str, ...]:
+    """A caller's stage list, or a refusal that says exactly which name is wrong.
+
+    A typo in the environment is a warning (a service must start); a typo in an argument is an
+    error, raised before the first network call, because the caller is standing right there and
+    can be told.
+    """
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(f"{where} must be a list of stage names, not {type(value).__name__}")
+    names = _dedupe(value)
+    if not names:
+        raise ValueError(f"{where} is empty: name at least one stage")
+    for name in names:
+        stage = available.get(name)
+        if stage is None:
+            raise ValueError(
+                f"{where} names {name!r}, which is not a stage this build has "
+                f"({', '.join(sorted(available))})")
+        supports = stage.supports_search() if capability == "search" else stage.supports_extract()
+        if not supports:
+            raise ValueError(f"{where} names {name!r}, which does not support {capability}")
+    return names
+
+
+def _validate_budget(budget: Any, max_cost_usd: Any) -> tuple[Optional[str], Optional[float]]:
+    if budget is not None:
+        if not isinstance(budget, str) or budget.strip().lower() not in BUDGETS:
+            raise ValueError(f"budget must be one of {', '.join(BUDGETS)} or None "
+                             f"(got {budget!r})")
+        budget = budget.strip().lower()
+    if max_cost_usd is not None:
+        if isinstance(max_cost_usd, bool) or not isinstance(max_cost_usd, (int, float)):
+            raise ValueError(f"max_cost_usd must be a number (got {max_cost_usd!r})")
+        if max_cost_usd < 0:
+            raise ValueError(f"max_cost_usd must not be negative (got {max_cost_usd!r})")
+        max_cost_usd = float(max_cost_usd)
+    if budget == BUDGET_FREE:
+        # A free budget already says "no money at all": a ceiling on top of it would only be a
+        # second, weaker statement about the same thing.
+        max_cost_usd = None
+    return budget, max_cost_usd
+
+
+def _stricter(call_budget: Optional[str], call_ceiling: Optional[float],
+              chain_budget: Optional[str], chain_ceiling: Optional[float],
+              ) -> tuple[Optional[str], Optional[float]]:
+    """The strictest of the chain's budget and the call's: a name is a promise, not a default.
+
+    A caller may tighten (`max_cost_usd` on a chain without one) or repeat, never loosen — a chain
+    called `free` that starts spending money because someone passed an argument has stopped being
+    what its name says.
+    """
+
+    def rank(budget: Optional[str], ceiling: Optional[float]) -> int:
+        if budget == BUDGET_FREE:
+            return 2
+        return 1 if ceiling is not None else 0
+
+    if rank(chain_budget, chain_ceiling) > rank(call_budget, call_ceiling):
+        return chain_budget, chain_ceiling
+    if rank(call_budget, call_ceiling) > rank(chain_budget, chain_ceiling):
+        return call_budget, call_ceiling
+    # Same rank: the tighter ceiling wins, and a free budget stays free.
+    if call_budget == BUDGET_FREE or chain_budget == BUDGET_FREE:
+        return BUDGET_FREE, None
+    ceilings = [c for c in (call_ceiling, chain_ceiling) if c is not None]
+    return None, (min(ceilings) if ceilings else None)
+
+
+def resolve_chain(settings: "config.Settings", available: dict[str, "Stage"], capability: str,
+                  *, stages: Any = None, chain: Optional[str] = None, fallback: bool = False,
+                  budget: Any = None, max_cost_usd: Any = None,
+                  ignore_pause: bool = False) -> ResolvedChain:
+    """Decide the one chain this call walks. Pure apart from reading the settings it is given.
+
+    Sources, at most one of them naming stages: an explicit list, a named chain from the
+    configuration file, or the default order for the capability. A budget may accompany any of
+    them — a caller is allowed to say "and do not spend money" about the default chain too.
+    """
+    if capability not in ("search", "extract"):
+        raise ValueError(f"capability must be 'search' or 'extract' (got {capability!r})")
+    if stages is not None and chain is not None:
+        raise ValueError("stages and chain are mutually exclusive: pass one, not both")
+
+    budget, max_cost_usd = _validate_budget(budget, max_cost_usd)
+    default_names = _dedupe(settings.search_order if capability == "search"
+                            else settings.extract_order)
+    overriding = stages is not None or chain is not None
+    if overriding and not settings.allow_chain_override:
+        raise ValueError(
+            "per-call chains are disabled in this deployment "
+            "(QUOTAROUTER_ALLOW_CHAIN_OVERRIDE=0); use the configured order")
+
+    if stages is not None:
+        names = _validate_stages(stages, available, capability, "stages")
+        _refuse_impossible_budget(names, available, budget, "stages")
+        return ResolvedChain(
+            capability, MODE_CUSTOM, names, _fallback_names(default_names, names, fallback),
+            allow_keyless=fallback and settings.keyless_last_resort,
+            budget=budget, max_cost_usd=max_cost_usd, requested=names,
+            ignore_pause=ignore_pause)
+
+    if chain is not None:
+        spec = settings.chains.get(chain)
+        if spec is None:
+            existing = ", ".join(settings.chains.names()) or "none configured"
+            raise ValueError(f"chain {chain!r} is not declared (known chains: {existing})")
+        names = spec.stages_for(capability)
+        if not names:
+            raise ValueError(
+                f"chain {chain!r} declares no {capability} stages "
+                f"(it has: {', '.join(spec.capabilities()) or 'nothing'})")
+        names = _validate_stages(names, available, capability, f"chain {chain!r}")
+        budget, max_cost_usd = _stricter(budget, max_cost_usd, spec.budget, spec.max_cost_usd)
+        _refuse_impossible_budget(names, available, budget, f"chain {chain!r}")
+        # A non-strict chain falls back on its own; a caller can still ask for it explicitly.
+        continue_after = fallback or not spec.strict
+        return ResolvedChain(
+            capability, MODE_NAMED, names,
+            _fallback_names(default_names, names, continue_after),
+            allow_keyless=continue_after and settings.keyless_last_resort,
+            budget=budget, max_cost_usd=max_cost_usd, requested=(str(chain),),
+            ignore_pause=ignore_pause)
+
+    return ResolvedChain(
+        capability, MODE_DEFAULT, default_names, (), allow_keyless=settings.keyless_last_resort,
+        budget=budget, max_cost_usd=max_cost_usd, requested=(), ignore_pause=ignore_pause)
+
+
+def _refuse_impossible_budget(names: tuple[str, ...], available: dict[str, "Stage"],
+                              budget: Optional[str], where: str) -> None:
+    """A budget no stage in the chain can satisfy is the caller's mistake, not a runtime failure.
+
+    Without this, `stages=["deepseek"], budget="free"` would resolve happily and then fail with a
+    per-stage reason at call time, looking like a vendor problem instead of a contradiction in the
+    request.
+    """
+    if budget != BUDGET_FREE or not names:
+        return
+    stages = [available[name] for name in names if name in available]
+    if stages and all(getattr(stage, "funding", "free") == "balance" for stage in stages):
+        raise ValueError(
+            f"{where} cannot be combined with budget=free: every stage in it is funded by a "
+            f"prepaid balance ({', '.join(stage.name for stage in stages)})")
+
+
+def _fallback_names(default_names: tuple[str, ...], names: tuple[str, ...],
+                    fallback: bool) -> tuple[str, ...]:
+    if not fallback:
+        return ()
+    return tuple(name for name in default_names if name not in names)
 
 
 _SHARED: Optional["Router"] = None
@@ -251,19 +449,29 @@ class Router:
                 returned.append(name)
         return {"returned": returned, "probe": report}
 
-    def skips(self, capability: str) -> list[tuple[str, str]]:
+    def skips(self, capability: str, resolved: Optional[ResolvedChain] = None,
+              quantity: float = 1.0) -> list[tuple[str, str]]:
         """Vendors that cannot serve this call right now, with the reason (for `router route`)."""
-        return [(s.stage, s.reason) for s in self.candidates(capability)[1]]
+        return [(s.stage, s.reason) for s in self.candidates(capability, resolved, quantity)[1]]
+
+    def resolve(self, capability: str, **kwargs: Any) -> ResolvedChain:
+        """Resolve a chain against this router's stages and settings."""
+        return resolve_chain(self.settings, self.stages, capability, **kwargs)
 
     # --- candidate selection -----------------------------------------------------------
-    def candidates(self, capability: str) -> tuple[list[Stage], list[TriggerReason]]:
-        """Stages that may serve this call, in order, plus the reason each skipped one is out."""
-        order = self.settings.search_order if capability == "search" else self.settings.extract_order
+    def candidates(self, capability: str, resolved: Optional[ResolvedChain] = None,
+                   quantity: float = 1.0) -> tuple[list[Stage], list[TriggerReason]]:
+        """Stages that may serve this call, in order, plus the reason each skipped one is out.
+
+        `quantity` is what the call asks for — one search, or N pages to extract — because a cost
+        ceiling is a statement about this call, not about a unit of work.
+        """
+        resolved = resolved or self.resolve(capability)
         usable: list[Stage] = []
         skipped: list[TriggerReason] = []
         now = self.clock()
 
-        for name in order:
+        for name in resolved.order():
             stage = self.stages.get(name)
             if stage is None:
                 skipped.append(TriggerReason(name, "unknown stage (not in the registry)"))
@@ -277,30 +485,91 @@ class Router:
                 continue
             self._sync_quota(stage)
             state = self.ledger.get(name)
-            if state.is_paused(now):
-                if (state.pause_kind == "quota" and state.reset_at and now >= state.reset_at
-                        and ledger_mod.pause_origin_of(state) != ledger_mod.ORIGIN_OPERATOR):
-                    self.ledger.enable(name)  # the window rolled: try again
-                else:
-                    skipped.append(TriggerReason(name, _pause_text(state, now)))
-                    continue
-            cost = self._unit_cost(stage, capability)
-            if state.limit > 0 and not state.has_room(cost):
-                skipped.append(TriggerReason(
-                    name, f"quota spent ({state.used:g}/{state.limit:g} {stage.unit})"))
+            # The budget is checked first: when a call carries one, "the budget keeps this stage
+            # out" is the honest reason, not the generic "quota spent" that hides it.
+            blocked = self._budget_skip(stage, capability, state, resolved, quantity)
+            if blocked:
+                skipped.append(TriggerReason(name, blocked))
                 continue
+            if not resolved.ignore_pause:
+                if state.is_paused(now):
+                    if (state.pause_kind == "quota" and state.reset_at and now >= state.reset_at
+                            and ledger_mod.pause_origin_of(state) != ledger_mod.ORIGIN_OPERATOR):
+                        self.ledger.enable(name)  # the window rolled: try again
+                    else:
+                        skipped.append(TriggerReason(name, _pause_text(state, now)))
+                        continue
+                cost = self._unit_cost(stage, capability)
+                if state.limit > 0 and not state.has_room(cost):
+                    skipped.append(TriggerReason(
+                        name, f"quota spent ({state.used:g}/{state.limit:g} {stage.unit})"))
+                    continue
+            else:
+                # A forced call is a diagnosis, not a bypass: it ignores our own belief about the
+                # stage (a pause, a spent counter) so the vendor itself can answer. Credentials
+                # and capabilities were already checked above and are never bypassed.
+                operator_stop = (state.is_paused(now)
+                                 and ledger_mod.pause_origin_of(state) == ledger_mod.ORIGIN_OPERATOR)
+                if operator_stop:
+                    skipped.append(TriggerReason(
+                        name, f"stopped by operator ({state.pause_reason}); force does not lift it"))
+                    continue
             usable.append(stage)
         return usable, skipped
+
+    def _budget_skip(self, stage: Stage, capability: str, state: "ledger_mod.VendorState",
+                     resolved: ResolvedChain, quantity: float) -> str:
+        """Why a budget keeps this stage out, or "" when it may serve.
+
+        Two different questions, and they are not interchangeable: `budget="free"` asks "can this
+        call cost money at all", a ceiling asks "how much money". The vendors do not count the
+        same unit — some spend USD, some spend credits — so a dollar ceiling cannot price a
+        credit-metered stage without inventing an exchange rate. Such a stage is therefore held to
+        the free-grant rule: usable inside its grant, skipped once the grant is spent.
+        """
+        funding = getattr(stage, "funding", "free")
+        if resolved.budget == BUDGET_FREE and funding == "balance":
+            return "costs money (balance-funded) and this call is budget=free"
+        if resolved.budget is None and resolved.max_cost_usd is None:
+            return ""
+        allowance = stage.monthly_allowance
+        if allowance is not None and state.used >= float(allowance):
+            return (f"free grant spent ({state.used:g}/{float(allowance):g} {stage.unit})"
+                    + ("" if resolved.budget == BUDGET_FREE else
+                       " and this call has a dollar ceiling, which cannot price vendor credits"))
+        if resolved.max_cost_usd is None:
+            return ""
+        if stage.unit != "usd":
+            return ""
+        estimate = self._unit_cost(stage, capability) * max(1.0, quantity)
+        if estimate > resolved.max_cost_usd:
+            return (f"estimate ${estimate:.4f} for this call exceeds the ceiling "
+                    f"${resolved.max_cost_usd:.4f}")
+        return ""
 
     @staticmethod
     def _unit_cost(stage: Stage, capability: str) -> float:
         return stage.capability.search_units if capability == "search" else stage.capability.extract_units
 
     # --- the walk ----------------------------------------------------------------------
-    def run_search(self, query: str, limit: int) -> RouteResult:
-        return self._walk("search", lambda stage: stage.search(query, limit))
+    def run_search(self, query: str, limit: int, *, stages: Any = None, chain: Optional[str] = None,
+                   fallback: bool = False, budget: Any = None, max_cost_usd: Any = None,
+                   ignore_pause: bool = False) -> RouteResult:
+        """One search, through the default chain or the one this call names.
 
-    def run_extract(self, urls: list[str]) -> RouteResult:
+        `stages` is an explicit list (one name is a valid chain), `chain` a name from the
+        configuration file. They are mutually exclusive; either beats the default order for this
+        call only. `budget="free"` and `max_cost_usd` bound what it may spend. `ignore_pause`
+        spends one attempt on a parked stage for diagnosis.
+        """
+        resolved = self.resolve(
+            "search", stages=stages, chain=chain, fallback=fallback, budget=budget,
+            max_cost_usd=max_cost_usd, ignore_pause=ignore_pause)
+        return self._walk("search", lambda stage: stage.search(query, limit), resolved, 1.0)
+
+    def run_extract(self, urls: list[str], *, stages: Any = None, chain: Optional[str] = None,
+                    fallback: bool = False, budget: Any = None, max_cost_usd: Any = None,
+                    ignore_pause: bool = False) -> RouteResult:
         """Extract page by page across the chain.
 
         A batch is not all-or-nothing. When a stage returns text for some URLs and a vendor
@@ -310,8 +579,11 @@ class Router:
         it better, so it never travels further.
         """
         urls = [str(u) for u in urls]
-        usable, skipped = self.candidates("extract")
-        result = RouteResult()
+        resolved = self.resolve(
+            "extract", stages=stages, chain=chain, fallback=fallback, budget=budget,
+            max_cost_usd=max_cost_usd, ignore_pause=ignore_pause)
+        usable, skipped = self.candidates("extract", resolved, float(max(1, len(urls))))
+        result = self._stamped(resolved)
         result.attempts.extend(RouteAttempt(s.stage, False, f"skipped: {s.reason}") for s in skipped)
 
         found: dict[str, dict[str, Any]] = {}
@@ -341,6 +613,7 @@ class Router:
                     if url in pending:
                         pending.remove(url)
                     delivered += 1
+                    result.delivered[stage_name] = result.delivered.get(stage_name, 0) + 1
                 else:
                     reasons[url] = str(entry.get("error") or "no content")
             return delivered
@@ -369,7 +642,7 @@ class Router:
             serve_with(stage)
 
         last_resort = self.stages.get(KEYLESS_NAME)
-        if (pending and self.settings.keyless_last_resort and last_resort is not None
+        if (pending and resolved.allow_keyless and last_resort is not None
                 and KEYLESS_NAME not in [s.stage for s in result.attempts]):
             if serve_with(last_resort):
                 result.stage = KEYLESS_NAME
@@ -383,9 +656,21 @@ class Router:
         result.payload = [found[url] for url in urls if url in found]
         return result
 
-    def _walk(self, capability: str, call: Callable[[Stage], Any], urls: Optional[list[str]] = None) -> RouteResult:
-        usable, skipped = self.candidates(capability)
-        result = RouteResult()
+    def _stamped(self, resolved: ResolvedChain) -> RouteResult:
+        """A result that already knows which chain it walked — so the audit line cannot drift."""
+        return RouteResult(
+            chain_mode=resolved.mode,
+            requested=list(resolved.requested),
+            budget=resolved.budget,
+            max_cost_usd=resolved.max_cost_usd,
+            forced=resolved.ignore_pause,
+        )
+
+    def _walk(self, capability: str, call: Callable[[Stage], Any],
+              resolved: Optional[ResolvedChain] = None, quantity: float = 1.0) -> RouteResult:
+        resolved = resolved or self.resolve(capability)
+        usable, skipped = self.candidates(capability, resolved, quantity)
+        result = self._stamped(resolved)
         result.attempts.extend(RouteAttempt(s.stage, False, f"skipped: {s.reason}") for s in skipped)
 
         for stage in usable:
@@ -397,7 +682,7 @@ class Router:
 
         # Nothing configured could serve: the anonymous tier, if the operator allows it.
         last_resort = self.stages.get(KEYLESS_NAME)
-        if (self.settings.keyless_last_resort and last_resort is not None
+        if (resolved.allow_keyless and last_resort is not None
                 and KEYLESS_NAME not in [s.stage for s in result.attempts]):
             served = self._attempt(last_resort, capability, call, result)
             if served is not None:
@@ -511,14 +796,26 @@ class Router:
     # --- reporting ---------------------------------------------------------------------
     def log_route(self, capability: str, result: RouteResult, extra: dict[str, Any] | None = None) -> None:
         """One JSON line per call in `state/web-router/routes.jsonl` — the audit trail."""
-        record = {
+        record: dict[str, Any] = {
             "ts": ledger_mod.iso(self.clock()),
             "capability": capability,
             "served_by": result.stage or None,
             "ok": result.ok,
             "chain": [a.as_line() for a in result.attempts],
-            **(extra or {}),
+            # Additive, and always present: a reader six months from now can tell a default call
+            # from a pinned one without guessing, and an old reader ignores what it never knew.
+            "chain_mode": result.chain_mode,
+            "requested": list(result.requested),
         }
+        if result.forced:
+            record["forced"] = True
+        if result.budget is not None:
+            record["budget"] = result.budget
+        if result.max_cost_usd is not None:
+            record["max_cost_usd"] = result.max_cost_usd
+        if result.delivered:
+            record["delivered"] = dict(result.delivered)
+        record.update(extra or {})
         try:
             retention.append(path=self.settings.log_path,
                              line=json.dumps(record, ensure_ascii=False) + "\n",

@@ -1,0 +1,30 @@
+# Copy this file to ~/.config/quotarouter/chains.toml and edit it.
+#
+# A chain is a pair of ordered stage lists: one for a search, one for a page. Declaring only one of
+# them is allowed, and then the chain refuses calls for the other capability — a name that quietly
+# grows a tail is not a name.
+#
+# Stage names this build has: deepseek, exa, firecrawl, jina, keenable, keyless, tavily
+#
+# Restart the process after editing: chains are read once, at startup.
+# Check the result with `quotarouter chains` (it dials nothing).
+
+[chains.fast]
+description = "Search only, two providers, no page fetching"
+search = ["exa", "firecrawl"]
+
+[chains.free]
+description = "Free allowances only: never spends money"
+search = ["keenable", "exa", "firecrawl"]
+extract = ["jina", "firecrawl"]
+budget = "free"
+
+[chains.single-vendor]
+description = "Reproduce one vendor's answer, failures included"
+search = ["firecrawl"]
+extract = ["firecrawl"]
+
+[chains.prefer-jina]
+description = "Jina first; if it cannot serve, the default order takes over"
+extract = ["jina"]
+strict = false

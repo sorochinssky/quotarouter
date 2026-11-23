@@ -339,3 +339,20 @@ def test_every_annotation_in_the_package_resolves():
                 broken.append(f"{module_info.name}:{label}: {exc}")
 
     assert not broken, "unresolvable annotations: " + "; ".join(broken)
+
+
+def test_the_plugin_manifest_agrees_with_the_package_version():
+    """The manifest is a third copy of the version; a copy that drifts is a lie with a URL."""
+    import quotarouter
+
+    manifest = (REPO_ROOT / "hermes_plugin" / "plugin.yaml").read_text(encoding="utf-8")
+    version = re.search(r"^version:\s*(\S+)", manifest, re.M)
+    assert version is not None, "plugin.yaml has no version"
+    assert version.group(1) == quotarouter.__version__
+
+
+def test_the_plugin_description_does_not_spell_out_the_chain_order():
+    """The order is configuration. A prose copy of it is wrong the first time someone reorders."""
+    manifest = (REPO_ROOT / "hermes_plugin" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "->" not in manifest
+    assert "search order" not in manifest.lower()

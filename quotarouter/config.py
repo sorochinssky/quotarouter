@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import chains as chains_mod
 from . import env_source
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,24 @@ class Settings:
     # behaviour: wait for the monthly window or for an operator).
     quota_retry: float = field(default_factory=lambda: _float("QUOTA_RETRY", 900.0))
     quota_retry_max: float = field(default_factory=lambda: _float("QUOTA_RETRY_MAX", 21600.0))
+    # Where the named chains live; the file is optional, and a deployment may point elsewhere.
+    chains_path: Path = field(
+        default_factory=lambda: Path(_env("CHAINS_FILE") or chains_mod.DEFAULT_FILE).expanduser())
+    # A deployment hands the model a tool it did not write; if pinning one vendor is not acceptable
+    # there, the whole per-call override is refused rather than quietly served from the default.
+    allow_chain_override: bool = field(default_factory=lambda: _flag("ALLOW_CHAIN_OVERRIDE", True))
+    # Parsed once, on first use: the file is configuration, and configuration does not change under
+    # a running process (a reload would need a watcher and a story about half-written files).
+    _chains: Optional[chains_mod.ChainSet] = field(default=None, repr=False, compare=False)
+
+    @property
+    def chains(self) -> chains_mod.ChainSet:
+        """The named chains, parsed on first read and then remembered."""
+        if self._chains is None:
+            from .stages import STAGE_CLASSES
+
+            self._chains = chains_mod.load(_env, set(STAGE_CLASSES), path=self.chains_path)
+        return self._chains
 
     @property
     def ledger_path(self) -> Path:

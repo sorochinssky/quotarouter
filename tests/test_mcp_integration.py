@@ -80,8 +80,11 @@ def test_quota_status_reports_the_empty_ledger_without_network(tmp_path):
         answer = client.send("tools/call", {"name": "quota_status", "arguments": {}})
         assert answer["result"]["isError"] is False
         # the payload is JSON per vendor: parse it instead of matching prose
-        vendors = json.loads(answer["result"]["content"][0]["text"])
+        report = json.loads(answer["result"]["content"][0]["text"])
+        vendors = report["vendors"]
         assert "exa" in vendors and "firecrawl" in vendors
+        assert vendors["deepseek"]["funding"] == "balance", "prepaid money says so"
+        assert report["chains"] == {} or isinstance(report["chains"], dict)
         # keyed vendors must report no credential in this process; keyless stages (jina) do
         # not need one and legitimately report true
         for name in ("exa", "firecrawl", "deepseek"):

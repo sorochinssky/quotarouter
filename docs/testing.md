@@ -208,9 +208,42 @@ looked like one bad page, and it was dialed again on the next call. The translat
 in one place (see `http_client._call`), and `test_jina_reader.py` pins it: a timeout is a
 `transient` page error, so the router can pause the stage instead of re-dialing it.
 
+## Level 8 — per-call chains and budgets
+
+A call can now name its own chain and its own budget. That adds a second decision path next to the
+configured order, so the tests are split the same way: the file, the decision, the walk, the bill.
+
+- `test_chain_file.py` — the TOML file: a chain as a pair of lists, one invalid entry dropped with
+  its reason while the rest loads, an unreadable file (a directory, which stands in for `EACCES`
+  when tests run as root) leaving the default order in charge, broken TOML naming the path, and the
+  one-line shorthand replacing the file instead of merging with it.
+- `test_chain_resolution.py` — the decision table: default / explicit list / named chain, the
+  refusals (both arguments at once, unknown name, capability mismatch, empty list, malformed
+  budget), the kill switch, `fallback`, and the budget precedence table (a chain's budget cannot be
+  loosened by a caller).
+- `test_call_budget.py` — the money rules: a balance-funded stage never serves `budget="free"`, an
+  unmetered stage is free, a spent free grant is skipped rather than overrun, a ceiling refuses
+  before the wire (estimate equal to the ceiling passes, a cent above does not), a credit-metered
+  stage is not priced at a guess, and pages — not calls — are what an extract ceiling counts.
+- `test_chain_walk.py` — the walk: a strict chain never reaches the anonymous tier, `fallback`
+  walks the default order without repeating a name, `force` is one attempt that is charged and
+  re-parks, an operator stop survives it, and the audit line carries `chain_mode`, `requested`,
+  `budget`, `forced` and — for a batch split across vendors — `delivered: {stage: pages}`.
+  Also eight threads with three chains: every thread dials only its own stage, and the shared
+  router's settings are unchanged afterwards.
+- `test_cli_chains.py` — `chains`, `route --chain/--stages/--budget`, `call` with its exit codes
+  (2 = the request was impossible, 1 = nobody served it), and the audit line written by the CLI.
+- `test_mcp_stdio.py` — the real stdio transport in a subprocess: `initialize`, the optional
+  properties in `tools/list` (present, not required), a bad chain returning `isError` with the list
+  of real stages, and `quota_status` still answering in the same session.
+- `test_docs_examples.py` — the operator guide is executable: every TOML block parses, every fenced
+  example is a usable chain, the shipped `docs/chains.example.toml` loads without a problem, and the
+  commands in the guide run with no credentials (which also proves they dial nothing).
+
 ## What these levels do not cover
 
-- Load behaviour and concurrent calls (vendor QPS limits).
+- Vendor-side rate limits under sustained load: the concurrency test proves chains do not
+  leak into each other, not that a vendor tolerates the call rate.
 - Long-term ledger life: the real window roll-over on the 30th is only tested on a fake clock
   (`test_ledger.py`).
 - Work through `delegate_task` and subagents — that path initialises plugins differently.
@@ -219,7 +252,8 @@ in one place (see `http_client._call`), and `test_jina_reader.py` pins it: a tim
 ## Debugging a failed step
 
 1. `FAIL plugin_registry` → the plugin directory was not found or not enabled: check
-   `plugins.enabled`, and that `hermes_plugin/quotarouter` is a symlink, not an empty directory.
+   `plugins.enabled`, and that `hermes_plugin/` holds a real copy of the package (the plugin
+   validator refuses symlinks: `symlink_escape`).
 2. `FAIL search_tool` with `success: false` → read the error: it lists every stage with the
    reason it was skipped (`no EXA_API_KEY set`, `quota spent 10/10 usd`, …).
 3. `FAIL extract_tool` → open `<home>/state/quotarouter/routes.jsonl`; the chain line carries

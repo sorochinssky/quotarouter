@@ -8,6 +8,32 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **A call can name its own chain**, down to a single vendor: `run_search(..., stages=["exa"])`,
+  `chain="free"`, `fallback=True`, `ignore_pause=True`; the same optional arguments on the MCP
+  tools (`stages`, `chain`, `fallback`, `force`, `budget`, `max_cost_usd`). Without them a call
+  walks the configured order exactly as before.
+- **Named chains in a file**: `~/.config/quotarouter/chains.toml` (`QUOTAROUTER_CHAINS_FILE`),
+  a chain being a pair of stage lists plus a description, a budget and a strictness flag. A
+  malformed entry is reported and dropped; the rest still loads. `QUOTAROUTER_CHAINS` remains as a
+  one-line shorthand and replaces the file when set. Guide: `docs/chains.md`.
+- **A per-call budget**: `budget="free"` refuses to spend money (no balance-funded stage, no
+  overrun of a spent free grant), and `max_cost_usd` refuses a call whose estimate exceeds the
+  ceiling before any vendor is dialed. A stage declares how it is funded (`free` / `balance`), so
+  "free" is a fact rather than an inference.
+- `quotarouter chains`, `quotarouter call`, and `route --chain/--stages/--budget/--max-cost` —
+  all of them resolve without dialing a vendor.
+- The audit line records `chain_mode`, `requested`, `budget` and, for a batch served by more than
+  one vendor, `delivered: {stage: pages}`. All fields are additive; older readers ignore them.
+
+### Changed
+
+- `quota_status` over MCP now reports `vendors`, `chains` and `allow_chain_override`, and each
+  vendor's `funding`. The vendor map moved under `vendors`.
+- The plugin manifest version is checked against `quotarouter.__version__` by a test, and its
+  description no longer repeats the default order.
+
+### Added (earlier)
+
 - `quotarouter recheck` — probe the vendors now and release machine pauses immediately,
   instead of waiting for the next search.
 - `QUOTAROUTER_QUOTA_RETRY` / `QUOTAROUTER_QUOTA_RETRY_MAX` — how long a vendor parked for an

@@ -40,6 +40,10 @@ class Stage:
     key_env: str = ""
     unit: str = "requests"
     monthly_allowance: Optional[float] = None  # units per window; None = not a metered quota
+    # How the allowance is paid for: `free` (unmetered, or a monthly grant that costs nothing) or
+    # `balance` (prepaid money). "Has quota left" and "has free quota left" are different
+    # questions, and only the stage can answer the second one — the router never guesses.
+    funding: str = "free"
     capability = Capability()
 
     # --- identity ----------------------------------------------------------------------

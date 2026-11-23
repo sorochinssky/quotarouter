@@ -27,6 +27,9 @@ class DeepSeekStage(Stage):
     key_env = "DEEPSEEK_API_KEY"
     unit = "usd"
     monthly_allowance = None  # balance, not a monthly allowance
+    # Prepaid money, not a free grant: a call under `budget="free"` must never land here, because
+    # "there is money on the account" is exactly what that budget forbids spending.
+    funding = "balance"
     capability = Capability(search=True, extract=True, search_units=USD_PER_CALL, extract_units=USD_PER_CALL)
 
     def _headers(self) -> dict[str, str]:

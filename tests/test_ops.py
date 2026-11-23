@@ -361,24 +361,29 @@ def test_daemon_cycle_prunes_the_audit_trail(monkeypatch):
     assert calls == ["probe", "prune"], calls
 
 
-def test_route_says_the_anonymous_tier_will_serve_when_nothing_is_configured(monkeypatch, capsys):
+def test_route_says_the_anonymous_tier_will_serve_when_nothing_is_configured(
+        tmp_path, monkeypatch, capsys):
     """`unusable` while the call actually succeeds from the keyless tier is a lie operators act on."""
-    import argparse
+    from quotarouter import config, ledger as ledger_mod, routing
+    from quotarouter.stages.base import Capability, Stage
 
-    class NoStages:
-        stages = {"keyless": object()}
+    class NoKey(Stage):
+        name = "exa"
+        key_env = "EXA_API_KEY"
+        capability = Capability(search=True, extract=False)
 
-        def candidates(self, capability):
-            return [], [("exa", "no EXA_API_KEY set")]
+    class Keyless(Stage):
+        name = "keyless"
+        key_env = ""
+        capability = Capability(search=True, extract=True, search_units=0.0, extract_units=0.0)
 
-        def skips(self, capability):
-            return [("exa", "no EXA_API_KEY set")]
-
-        def _noop(self, *a, **k):
-            return None
-
-    monkeypatch.setattr(cli, "get_router", lambda: NoStages(), raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
     monkeypatch.setenv("QUOTAROUTER_ALLOW_KEYLESS", "1")
-    cli.cmd_route(argparse.Namespace())
+    settings = config.Settings(search_order=("exa",), extract_order=(), state_dir=tmp_path)
+    router = routing.Router(settings=settings, stages={"exa": NoKey(), "keyless": Keyless()},
+                            ledger=ledger_mod.Ledger(tmp_path / "ledger.json"))
+    monkeypatch.setattr(cli, "get_router", lambda: router, raising=False)
+
+    assert cli.cmd_route(cli.build_parser().parse_args(["route"])) == 0
     out = capsys.readouterr().out
     assert "fallback: keyless" in out and "unusable" not in out, out

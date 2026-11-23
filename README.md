@@ -193,12 +193,60 @@ goes first on extract. Measurements are in `docs/vendor-probes.md`.
 The legacy `ROUTER_*` variable names are still read, so a rename does not break an existing
 deployment.
 
+## Choosing a chain per call
+
+The default order is a property of the process. A single call can also name its own chain — down to
+one vendor — and say what it may spend, without changing anything for the next call.
+
+```python
+router.run_search("q", 5, stages=["firecrawl"])              # this vendor or an honest failure
+router.run_search("q", 5, chain="free", budget="free")       # a name from the chain file, no money
+router.run_extract(urls, chain="prefer-jina", fallback=True)  # then the default order
+router.run_search("q", 5, stages=["exa"], ignore_pause=True)  # one diagnostic attempt, charged
+```
+
+The same from the CLI:
+
+```bash
+quotarouter call search "q" --stages firecrawl
+quotarouter route --chain free          # what it would dial, without dialing
+quotarouter chains                      # what the chain file produced
+```
+
+And over MCP, as optional arguments on `web_search` / `web_extract`: `stages`, `chain`, `fallback`,
+`force`, `budget`, `max_cost_usd`. An old client that knows none of them keeps the default chain.
+
+Rules that make it predictable:
+
+- **Strict by default.** A named chain never continues into the default order and never reaches for
+  the anonymous tier. `fallback=True` (or `strict = false` in the file) asks for that explicitly.
+- **A wrong argument is a caller error.** An unknown name, a stage without the capability, an empty
+  list, both `stages` and `chain`, or a budget the chain cannot satisfy is refused before any
+  vendor is dialed, and the message names what exists.
+- **Same accounting.** A pinned call charges the ledger, parks stages and writes the audit line
+  exactly like a default call. The line records `chain_mode`, `requested`, `budget` and — for a
+  batch split across vendors — how many pages each stage delivered.
+- **A chain's budget is a promise.** A caller can tighten it, never loosen it.
+- **The operator can refuse the whole feature.** `QUOTAROUTER_ALLOW_CHAIN_OVERRIDE=0` makes
+  overrides an error rather than a silent substitution — useful when a model in a foreign client
+  must not be able to pin a paid vendor.
+- **Not available inside Hermes tools.** `web_search`/`web_extract` there take `query`/`urls` only;
+  the lever inside Hermes is the environment order, per process. The MCP and library surfaces carry
+  the per-call choice.
+
+Named chains live in `~/.config/quotarouter/chains.toml`
+(`QUOTAROUTER_CHAINS_FILE` points elsewhere). The format, examples, precedence and the refusal
+messages are documented in [`docs/chains.md`](docs/chains.md).
+
 ## Operations
 
 ```bash
 python3 -m quotarouter.cli status           # what each vendor has left
 python3 -m quotarouter.cli probe            # ask vendors for their balance, write the ledger
 python3 -m quotarouter.cli route            # who serves the next call, and why the rest do not
+python3 -m quotarouter.cli route --chain free  # the same for a named chain, without dialing
+python3 -m quotarouter.cli chains           # what the chain file gave, and what it dropped
+python3 -m quotarouter.cli call search "q" --stages exa   # one call through one vendor
 python3 -m quotarouter.cli selftest         # one live search + one live extract
 python3 -m quotarouter.cli disable exa --reason "key rotation"
 python3 -m quotarouter.cli enable exa
@@ -361,6 +409,10 @@ the difference per vendor, and it is part of the contract:
 - **Not verified at all**: Claude Desktop, Cursor, Codex and Claude Code as MCP clients. The
   server was proven with the reference SDK client and with `opencode`; for the others the
   configuration above is "should work", not "tested".
+- **Per-call chains, verified live**: a search pinned to `exa` (`chain_mode: custom` in the audit
+  line), and an extract through the `free` chain served by `jina` with `delivered: {"jina": 1}`.
+  The budget rules and the refusals are covered offline; a live call under a *spent* grant is not
+  something a test can arrange without burning an allowance.
 
 Two things this package deliberately does not do: it does not answer from a cache, and it does
 not hide a degraded call. If nothing serves, the error names every stage and why it was out.
@@ -371,6 +423,7 @@ not hide a degraded call. If nothing serves, the error names every stage and why
 - [CONTRIBUTING.md](CONTRIBUTING.md) — the gate, the rules enforced by tests, how to add a vendor
 - [SECURITY.md](SECURITY.md) — how to report a credential-handling bug, and what the package
   writes where
+- [docs/chains.md](docs/chains.md) — how to configure named chains (with an example file)
 - [docs/development.md](docs/development.md), [docs/testing.md](docs/testing.md),
   [docs/vendor-probes.md](docs/vendor-probes.md)
 
@@ -378,7 +431,9 @@ not hide a degraded call. If nothing serves, the error names every stage and why
 
 ```
 ~/.local/state/quotarouter/ledger.json    quotas, pauses, billing periods
-~/.local/state/quotarouter/routes.jsonl   one JSON line per call: who served it, who could not and why
+~/.local/state/quotarouter/routes.jsonl   one JSON line per call: who served it, which chain it
+                                         walked, who could not and why
+~/.config/quotarouter/chains.toml         named chains (optional), read once at startup
 ~/.local/state/quotarouter/routes.jsonl.1 previous generation, after rotation
 ~/.local/state/quotarouter/alerts.json    last time each alert kind was sent (cooldown state)
 ```

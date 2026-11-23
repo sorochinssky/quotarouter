@@ -33,6 +33,7 @@ class FakeState:
 @dataclass
 class FakeStage:
     unit: str = "credits"
+    funding: str = "free"
     credential: bool = True
     search: bool = True
     extract: bool = True
@@ -67,10 +68,12 @@ class FakeRouter:
     def now(self) -> float:
         return 1_000.0
 
-    def run_search(self, query: str, limit: int) -> routing.RouteResult:
+    def run_search(self, query: str, limit: int, **options) -> routing.RouteResult:
+        self.options = options
         return self.search_result or routing.RouteResult()
 
-    def run_extract(self, urls: list[str]) -> routing.RouteResult:
+    def run_extract(self, urls: list[str], **options) -> routing.RouteResult:
+        self.options = options
         return self.extract_result or routing.RouteResult()
 
     def log_route(self, capability: str, result, extra: dict) -> None:
@@ -212,9 +215,11 @@ def test_quota_status_reports_each_stage(server):
     response = engine.handle({"jsonrpc": "2.0", "id": 12, "method": "tools/call",
                               "params": {"name": "quota_status", "arguments": {}}})
     report = json.loads(text_of(response))
-    assert report["exa"]["credential"] is True
-    assert report["exa"]["used"] == 250.0
-    assert report["exa"]["capabilities"] == {"search": True, "extract": True}
+    assert report["vendors"]["exa"]["credential"] is True
+    assert report["vendors"]["exa"]["used"] == 250.0
+    assert report["vendors"]["exa"]["capabilities"] == {"search": True, "extract": True}
+    assert report["vendors"]["exa"]["funding"] == "free"
+    assert "chains" in report and "allow_chain_override" in report
 
 
 def test_quota_probe_forces_a_refresh(server):
