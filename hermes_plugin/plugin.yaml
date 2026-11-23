@@ -1,6 +1,6 @@
 name: quotarouter
 version: 0.2.0
-description: "Quota-aware web search and page extraction: spend free monthly allowances first and pick the provider by remaining quota instead of reacting to a 402. Search: exa -> firecrawl -> deepseek. Extract: jina -> firecrawl -> exa."
+description: "Quota-aware web search and page extraction: spend free monthly allowances first and pick the provider by remaining quota instead of reacting to a 402. Search: keenable -> exa -> tavily -> firecrawl -> deepseek. Extract: jina -> keenable -> firecrawl -> tavily -> exa -> deepseek. Vendors without a key are skipped."
 author: Andrey Sorochinsky
 kind: backend
 provides_web_providers:
