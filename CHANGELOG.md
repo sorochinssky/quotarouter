@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Nothing yet.
+
 ## [0.3.1] — 2026-11-23
 
 ### Fixed
@@ -21,7 +25,7 @@ All notable changes to this project are documented here. The format follows
   the integrations, the ledger's corruption paths, the retention edges and each vendor's
   non-JSON and empty-answer handling. `pytest -q` runs 498 tests.
 
-## [Unreleased]
+## [0.3.0] — 2026-11-23
 
 ### Added
 
@@ -99,5 +103,7 @@ First version meant to be used outside the author's machine.
   command) with a cooldown, and a page-level error policy that does not park a healthy stage for
   a blocked website.
 
-[Unreleased]: https://github.com/sorochinssky/quotarouter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sorochinssky/quotarouter/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.3.1
+[0.3.0]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.3.0
 [0.2.0]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.2.0

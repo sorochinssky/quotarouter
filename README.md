@@ -59,7 +59,8 @@ decision — did this response actually deliver a page?
 ## Install
 
 ```bash
-pip install quotarouter        # if the version you want is not on PyPI yet: pip install .
+pip install .          # from a checkout — the package is not on PyPI yet
+# once it is:  pip install quotarouter
 ```
 
 Then pick how you want to use it. All three read the same keys, from the same places.
@@ -164,7 +165,7 @@ Plugins are read when the gateway starts. `hermes plugins disable` followed by `
 them in a running process, which is enough after a code change; a fresh install wants the
 service itself restarted, with whatever command your install uses for the `hermes-gateway` unit.
 
-The shim imports `quotarouter` from your Python environment, so `pip install quotarouter` (or
+The shim imports `quotarouter` from your Python environment, so `pip install .` (or
 `pip install -e .`) has to come first. Vendor keys are ordinary variables in `~/.hermes/.env`.
 
 ## Stage order

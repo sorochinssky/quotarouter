@@ -302,7 +302,7 @@ def run_child(home: Path, *, label: str, extra_env: Optional[dict[str, str]] = N
 
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/root"),
+        "HOME": os.environ.get("HOME") or str(Path.home()),
         "HERMES_HOME": str(home),
         "QUOTAROUTER_STATE_DIR": str(home / "state" / PLUGIN_NAME),
         "E2E_HERMES_ROOT": str(HERMES_ROOT),

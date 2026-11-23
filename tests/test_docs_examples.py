@@ -85,3 +85,59 @@ def test_the_guide_json_shape_is_the_one_it_documents(example_env, capsys):
     assert cli.main(["chains", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert set(report) == {"source", "path", "chains", "problems", "allow_chain_override"}
+
+
+# --- the README is documentation too ------------------------------------------------------
+README = REPO_ROOT / "README.md"
+CHANGELOG = REPO_ROOT / "CHANGELOG.md"
+
+
+def _python_blocks_of_readme() -> list[str]:
+    text = README.read_text(encoding="utf-8")
+    return re.findall(r"```python\n(.*?)```", text, re.S)
+
+
+def test_the_readme_still_shows_python():
+    assert _python_blocks_of_readme(), "the first thing a visitor reads has a code sample"
+
+
+def test_every_call_in_the_readme_sample_is_a_real_call():
+    """A sample that names an argument the method does not take reads fine and fails for the reader.
+
+    Signatures are the cheapest way to catch that without network: the names come from the README,
+    the acceptance comes from the installed function.
+    """
+    import inspect
+
+    from quotarouter import Router
+
+    blocks = _python_blocks_of_readme()
+    calls = [match for block in blocks
+             for match in re.findall(r"router\.(\w+)\(([^)]*)\)", block)]
+    assert calls, "the sample is supposed to call the router"
+
+    for method, arguments in calls:
+        function = getattr(Router, method, None)
+        assert function is not None, f"README calls router.{method}, which does not exist"
+        signature = inspect.signature(function)
+        for name in re.findall(r"(\w+)\s*=", arguments):
+            assert name in signature.parameters, (
+                f"README passes {name}= to router.{method}, which does not accept it")
+
+
+@pytest.mark.parametrize("version", ["0.2.0", "0.3.0", "0.3.1"])
+def test_every_release_in_the_changelog_links_somewhere(version):
+    text = CHANGELOG.read_text(encoding="utf-8")
+    assert f"## [{version}]" in text, f"the tag exists, so the changelog must have a section"
+    assert f"[{version}]: https://" in text, f"{version} needs a link definition, or the heading is dead text"
+
+
+def test_the_unreleased_link_starts_at_the_newest_release():
+    """A compare link pinned to an older tag quietly hides everything since."""
+    text = CHANGELOG.read_text(encoding="utf-8")
+    released = sorted(re.findall(r"^\[(\d+\.\d+\.\d+)\]:", text, re.M),
+                      key=lambda v: tuple(int(part) for part in v.split(".")))
+    newest = released[-1]
+    match = re.search(r"^\[Unreleased\]: \S+compare/v(\S+?)\.\.\.HEAD", text, re.M)
+    assert match is not None
+    assert match.group(1) == newest, f"Unreleased compares from {match.group(1)}, newest tag is {newest}"

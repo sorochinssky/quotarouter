@@ -8,13 +8,13 @@ the real keys in `~/.hermes/.env`, from this host.
 - **exa** — search and extract both answered live (`POST /contents` → 172 chars, `costDollars
   0.001`). Remaining credit is a local estimate; Exa exposes no balance endpoint.
 - **firecrawl** — search answered live (`POST /v2/search` → 200, 2 credits), extract answers
-  live (955/1000 credits, balance read from the vendor).
+  live (about 95% of the plan still unspent, balance read from the vendor).
 - **jina** — `GET https://r.jina.ai/<url>` answered 200 with page text, no key needed. Extract
   only; it has no search endpoint.
 - **keyless** — `mcp.exa.ai/mcp` and `search.parallel.ai/mcp` answered live after two fixes
   below: search 0.53 s, extract 215 chars. Anonymous tier, not metered.
 - **deepseek** — the key is valid and the balance endpoint answers, but
-  `total_balance: -0.06`, `is_available: false` → every search is a 402. Parked in the ledger;
+  `total_balance` negative, `is_available: false` → every search is a 402. Parked in the ledger;
   `quotarouter enable deepseek` after a top-up.
 - **tavily** — **never verified.** No key. The endpoint is real (`POST /search` with a dummy
   key answers `401 Unauthorized: missing or invalid API key`, `GET /usage` likewise), but no
@@ -60,9 +60,9 @@ POST https://api.exa.ai/search
 
 ```
 GET https://api.firecrawl.dev/v2/team/credit-usage
--> {"success": true, "data": {"remainingCredits": 989, "planCredits": 1000,
-     "billingPeriodStart": "2026-10-30T07:28:51.871Z",
-     "billingPeriodEnd":   "2026-11-30T07:28:51.871Z"}}
+-> {"success": true, "data": {"remainingCredits": <remaining>, "planCredits": <plan>,
+     "billingPeriodStart": "<period start, ISO 8601>",
+     "billingPeriodEnd":   "<period end, ISO 8601>"}}
 ```
 
 - `POST /v2/search` → `creditsUsed: 2` (2 credits per search, up to 5 results).
