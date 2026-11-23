@@ -1,0 +1,60 @@
+# Changelog
+
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- `quotarouter recheck` — probe the vendors now and release machine pauses immediately,
+  instead of waiting for the next search.
+- `QUOTAROUTER_QUOTA_RETRY` / `QUOTAROUTER_QUOTA_RETRY_MAX` — how long a vendor parked for an
+  unfunded account waits before it is retried (default 900 s, doubling, capped at 6 h).
+
+### Changed
+
+- A vendor parked because its account cannot pay is now a machine pause with a deadline, not an
+  infinite one: it returns by itself as soon as a balance probe reports room. Only
+  `disable` (an operator stop) is permanent. Records written before this distinction are read
+  by their reason.
+- An empty page from any stage is a failure, not a result: `selftest` no longer counts a
+  whitespace-only page as delivered.
+
+### Fixed
+
+- Transport failures (timeouts, connection resets, TLS errors) were never translated into the
+  package's own error type, so every stage's failure handling was dead code for real network
+  problems: a vendor that had gone dark looked like one bad page and was dialed again on the
+  next call.
+- The keyless tier negotiated MCP without accepting `text/event-stream` (every call answered
+  `406`) and passed `{"url": …}` where `{"urls": [...]}` is required, so the last-resort stage
+  had never worked and reported an error message as page content.
+- `ledger.iso()` raised `OverflowError` on an operator stop (`inf` deadline), which aborted
+  `status` and every probe report.
+- A corrupt ledger entry no longer discards the readable ones; a ledger whose JSON parses but
+  has no vendor map is reported and rebuilt instead of silently zeroing all counters.
+- Tavily extract returned only the successful URLs and lost the caller's order; a failed URL is
+  now a page error in its original position.
+
+## [0.2.0] — 2026-11-22
+
+First version meant to be used outside the author's machine.
+
+### Added
+
+- Provider-agnostic core: `Router.run_search()` / `Router.run_extract()`, persistent quota
+  ledger, pause kinds with backoff, and an audit trail (`routes.jsonl`).
+- Stages: `exa`, `firecrawl`, `deepseek`, `tavily`, `keenable`, `jina` (Reader, works without a
+  key), and an anonymous MCP-based tier as the last resort.
+- Integrations: a Hermes web-search provider and an MCP stdio server (`web_search`,
+  `web_extract`, `quota_status`, `quota_probe`) that works with any MCP client.
+- CLI: `status`, `probe`, `route`, `selftest`, `serve-mcp`, `prune`, `daemon`, `schedule`,
+  `disable`, `enable`, `reset`, `alert-test`.
+- Bounded per-URL parallelism for extract, log rotation, alert transports (webhook, Telegram,
+  command) with a cooldown, and a page-level error policy that does not park a healthy stage for
+  a blocked website.
+
+[Unreleased]: https://github.com/sorochinssky/quotarouter/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sorochinssky/quotarouter/releases/tag/v0.2.0

@@ -20,6 +20,29 @@ rescue fires *after* the failure, again on every call.
 The choice is made from **remaining quota in a persistent ledger**, not from an error that
 already happened. A pause survives a restart and expires on the vendor's own reset date.
 
+## How it fits together
+
+```
+  your code, an MCP client, or Hermes
+               |
+               v
+   Router.run_search() / run_extract()        quotarouter/routing.py
+               |
+     1. read the ledger   ~/.local/state/quotarouter/ledger.json
+     2. ask free vendors  exa -> firecrawl -> deepseek -> tavily -> keenable
+        for their real balance first (probe, costs nothing)
+     3. skip what is spent or parked, walk the rest in order
+     4. account for what was spent, log the chain to routes.jsonl
+               |
+               v
+     one answer, or one honest error naming every stage
+```
+
+The ledger is the only shared state, and it is a plain JSON file written atomically, so a CLI
+run, an MCP server and a Hermes gateway on the same machine agree about what is left. Everything
+else is a stage: a small adapter with a key, a unit cost, an optional balance probe, and one
+decision — did this response actually deliver a page?
+
 ## Why not just install hermes-seek / hermes-sift
 
 | Requirement | seek/sift | quotarouter |
@@ -33,10 +56,67 @@ already happened. A pause survives a restart and expires on the vendor's own res
 | Audit: why this stage | partly | `routes.jsonl` + `quotarouter route` |
 | Usable outside Hermes | no | yes, core library + MCP server |
 
-## Install: any MCP client (not only Hermes)
+## Install
 
-The server speaks plain JSON-RPC 2.0 over stdio and needs nothing from Hermes. Register the
-command as a local MCP server in the client's own config:
+```bash
+pip install quotarouter        # if the version you want is not on PyPI yet: pip install .
+```
+
+Then pick how you want to use it. All three read the same keys, from the same places.
+
+```bash
+cp .env.example .env           # fill in the vendors you actually have; never commit it
+```
+
+Keys are looked up in this order: `os.environ`, then `QUOTAROUTER_ENV_FILE`, then `./.env`, then
+`~/.config/quotarouter/.env`. Inside Hermes the adapter adds the profile's own `.env` as one more
+source. A vendor without a key is skipped, never dialed; with no keys at all the router still
+answers through the anonymous tier and says so on stderr.
+
+### As a library
+
+```python
+from quotarouter import Router, format_failure
+
+router = Router()
+result = router.run_search("model context protocol", limit=3)
+if not result.ok:
+    raise SystemExit(format_failure(result, "search"))
+
+print(result.stage)                                    # who served it: exa, firecrawl, ...
+for row in (result.payload.get("data") or {}).get("web") or []:
+    print(row["url"])
+```
+
+A complete runnable version, including extract and the per-page error shape, is
+[`examples/library.py`](examples/library.py):
+
+```bash
+python examples/library.py "model context protocol" https://example.com/
+```
+
+### As an MCP server (any MCP client)
+
+The server speaks line-delimited JSON-RPC 2.0 over stdio and needs no SDK — one request per
+line, nothing else on stdout. Tools: `web_search {query, limit?}`, `web_extract {urls}`,
+`quota_status {}` (what the ledger believes) and `quota_probe {}` (ask the vendors for their real
+balance and store it — no credits spent).
+
+Claude Desktop, Cursor and anything else that reads `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "quotarouter": {
+      "command": "quotarouter",
+      "args": ["serve-mcp"],
+      "env": {"QUOTAROUTER_ENV_FILE": "/home/me/.config/quotarouter/.env"}
+    }
+  }
+}
+```
+
+`opencode` uses an array form in `~/.config/opencode/opencode.jsonc`:
 
 ```json
 {
@@ -44,30 +124,23 @@ command as a local MCP server in the client's own config:
     "quotarouter": {
       "type": "local",
       "enabled": true,
-      "command": ["python3", "-m", "quotarouter", "serve-mcp"],
+      "command": ["quotarouter", "serve-mcp"],
       "environment": {"QUOTAROUTER_ENV_FILE": "/home/me/.config/quotarouter/.env"}
     }
   }
 }
 ```
 
-(or `command: ["quotarouter", "serve-mcp"]` once the package is installed — the console script
-is on `PATH`.)
+Substitute `["python3", "-m", "quotarouter", "serve-mcp"]` if the console script is not on the
+client's `PATH` (a GUI app often has a shorter one).
 
-**Where the vendor keys come from.** `os.environ` first, then a dotenv file:
-`QUOTAROUTER_ENV_FILE` if set, otherwise `./.env`, otherwise `~/.config/quotarouter/.env`.
-Inside Hermes the adapter adds the profile's `.env` as one more source; nothing else is
-Hermes-specific. If no key is found the router does not fail — it answers from the anonymous
-tier and says so on stderr, because a foreign host that silently degraded would look like it
-was working.
+Verified against a real third-party agent, not only in unit tests: `opencode` reports
+`quotarouter connected` in `mcp list`, calls `quota_status` and `web_search`, and gets real URLs
+back. The same four tools were exercised through the reference `mcp` SDK client: `initialize` →
+protocol `2025-11-25`, `tools/list`, `tools/call`, and a bad argument returning `isError` without
+killing the server.
 
-Verified against a real third-party agent, not only in unit tests: `opencode` connects (its
-`mcp list` reports `quotarouter connected`), calls `quota_status` and `web_search`, and gets
-real URLs back. The same four tools were exercised through the reference `mcp` SDK client:
-`initialize` → protocol `2025-11-25`, `tools/list`, `tools/call`, a bad argument returning
-`isError` without killing the server.
-
-## Install: Hermes
+### As a Hermes plugin
 
 The plugin is an ordinary Hermes plugin directory: `hermes_plugin/__init__.py` calls
 `ctx.register_web_search_provider(RouterProvider())`. `RouterProvider` inherits
@@ -75,55 +148,24 @@ The plugin is an ordinary Hermes plugin directory: `hermes_plugin/__init__.py` c
 registry refuses a provider without it and silently registers nothing.
 
 ```bash
-# 1. connect the plugin. The shim imports the package from the same checkout (or from an
-#    installed copy), so a symlink to the directory is enough:
-ln -s /path/to/quotarouter/hermes_plugin ~/.hermes/plugins/quotarouter
+# 1. connect the plugin: a real directory, not a symlink to hermes_plugin/. A symlink that
+#    leaves the plugins directory is refused by `hermes plugins validate` (symlink_escape), and
+#    the plugin then loads nothing.
+cp -r /path/to/quotarouter/hermes_plugin ~/.hermes/plugins/quotarouter
 
 # 2. enable the plugin, point both backends at it
 hermes plugins enable quotarouter
 hermes config set web.search_backend quotarouter
 hermes config set web.extract_backend quotarouter
 hermes config set web.keyless_rescue false   # the keyless tier is our own last stage
-
-# 3. restart: plugins are loaded at startup
-systemctl --user restart hermes-gateway
 ```
 
-Vendor keys are ordinary environment variables in `~/.hermes/.env`:
-`EXA_API_KEY`, `FIRECRAWL_API_KEY`, `DEEPSEEK_API_KEY`, optionally `TAVILY_API_KEY`,
-`KEENABLE_API_KEY`, `JINA_API_KEY`. A vendor without a key is skipped, never dialed.
+Plugins are read when the gateway starts. `hermes plugins disable` followed by `enable` reloads
+them in a running process, which is enough after a code change; a fresh install wants the
+service itself restarted, with whatever command your install uses for the `hermes-gateway` unit.
 
-## Install: any MCP client
-
-```json
-{
-  "mcpServers": {
-    "quotarouter": {
-      "command": "python3",
-      "args": ["-m", "quotarouter.cli", "serve-mcp"]
-    }
-  }
-}
-```
-
-The server speaks line-delimited JSON-RPC 2.0 and needs no SDK — one request per line,
-nothing else on stdout. Tools: `web_search {query, limit?}`, `web_extract {urls}`,
-`quota_status {}` (what the ledger believes) and `quota_probe {}` (ask the vendors for their real
-balance and store it — no credits spent).
-
-## Install: as a library
-
-```python
-from quotarouter import Router, format_failure
-
-router = Router()
-result = router.run_search("nous research hermes agent", limit=3)
-if result.ok:
-    for row in result.results:
-        print(result.served_by, row["url"])
-else:
-    print(format_failure(result))
-```
+The shim imports `quotarouter` from your Python environment, so `pip install quotarouter` (or
+`pip install -e .`) has to come first. Vendor keys are ordinary variables in `~/.hermes/.env`.
 
 ## Stage order
 
@@ -257,13 +299,14 @@ Full ladder — `docs/testing.md`: what each level proves, what it costs, what c
 evidence. In short:
 
 ```bash
-python3 -m pytest -q                 # 128 tests, offline, no network
+python3 -m pytest -q                 # 288 tests, offline, no network, no keys
 python3 -m pytest -m live -q         # real vendors, ~$0.01, spends quota
 python3 -m pytest -m e2e -q          # end-to-end inside a real Hermes, ~$0.01
 python3 tests/e2e/harness.py         # the same without pytest, writes e2e-report.json
+python3 -m pytest -q --cov=quotarouter --cov-report=term-missing   # 93% line coverage
 ```
 
-Five levels:
+Eight levels:
 
 1. `test_errors.py`, `test_ledger.py` — response classification and accounting, as tables.
 2. `test_stages.py`, `test_routing.py` — adapters and the chain on `httpx.MockTransport`.
@@ -277,9 +320,17 @@ Five levels:
    Marked `live` / offline respectively.
 6. `tests/e2e/` — the plugin inside a real Hermes: loader, provider registry, tool envelope,
    config reading, isolation from the live profile. Marked `e2e`.
+7. Protocol and operational surface: `test_mcp_protocol.py` (the MCP server in-process),
+   `test_cli.py` (every command against a fake router), `test_hermes_provider.py`,
+   `test_resilience.py` (corrupt ledger, half-written state), `test_state_machine.py`
+   (states that only exist across calls), `test_self_healing.py` (machine pauses versus
+   operator stops), `test_jina_reader.py`, `test_stage_base.py`.
+8. `test_alerts_and_keyless.py` — the alerting layer on its worst day and the anonymous tier's
+   protocol edges.
 
 Levels 5 and 6 do not run by default: `addopts = "-m 'not live and not e2e'"` in
-`pyproject.toml`.
+`pyproject.toml`. The harness and the examples above were run on Python 3.11, 3.12, 3.13 and
+3.14.
 
 There is no CI in this repository by choice: `scripts/preflight.sh` is the gate (offline suite,
 `hermes plugins validate`, `build` + `twine check`), and `--live` adds the vendor and end-to-end
@@ -289,6 +340,34 @@ The code was also reviewed by models that did not write it — `scripts/model_re
 review (free tiers only) and `docs/reviews/2026-11-22-model-review.md` records what came back,
 what was fixed and what was rejected with a reason. Two of those findings were accounting bugs
 that made the ledger optimistic, which is the failure mode this project exists to prevent.
+
+## What is verified, and what is only written
+
+Being useful about quotas means being honest about evidence. `docs/vendor-probes.md` records
+the difference per vendor, and it is part of the contract:
+
+- **Exercised against the live API**: `exa` (search + contents), `firecrawl` (search, scrape,
+  credit balance), `jina` (Reader), `deepseek` (balance probe — the stage is parked while the
+  account has no funds), and the anonymous tier (search and fetch through a public MCP server).
+- **Covered by tests only, never seen answering**: `tavily` and `keenable`. Fixtures for both
+  were written by hand from the vendor documentation; no key was ever used. They are wired in
+  and skipped without a key, but treat them as unproven until `docs/vendor-probes.md` says
+  otherwise.
+- **Not verified at all**: Claude Desktop, Cursor, Codex and Claude Code as MCP clients. The
+  server was proven with the reference SDK client and with `opencode`; for the others the
+  configuration above is "should work", not "tested".
+
+Two things this package deliberately does not do: it does not answer from a cache, and it does
+not hide a degraded call. If nothing serves, the error names every stage and why it was out.
+
+## Project
+
+- [CHANGELOG.md](CHANGELOG.md) — what changed, and why the version moved
+- [CONTRIBUTING.md](CONTRIBUTING.md) — the gate, the rules enforced by tests, how to add a vendor
+- [SECURITY.md](SECURITY.md) — how to report a credential-handling bug, and what the package
+  writes where
+- [docs/development.md](docs/development.md), [docs/testing.md](docs/testing.md),
+  [docs/vendor-probes.md](docs/vendor-probes.md)
 
 ## State files
 

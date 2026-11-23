@@ -204,3 +204,102 @@ def test_the_cli_builds_its_router_from_the_core():
     from quotarouter import cli, routing
 
     assert cli.get_router is routing.shared_router
+
+
+
+# --- the promises a stranger reads first ---------------------------------------------------
+def _read(rel: str) -> str:
+    return (REPO_ROOT / rel).read_text(encoding="utf-8")
+
+
+def test_the_package_ships_the_pep_561_marker():
+    """`Typing :: Typed` in the classifiers is a claim; `py.typed` is the claim arriving.
+
+    Without the marker, mypy and pyright treat every annotation in this package as an
+    unverified hint and silently ignore it.
+    """
+    marker = CORE_ROOT / "py.typed"
+    assert marker.is_file(), "quotarouter/py.typed is missing"
+    assert marker.read_text(encoding="utf-8") == "", "the marker must stay empty"
+
+
+def test_the_version_has_one_source():
+    """Two hand-copied version strings drift; the build reads the package's own `__version__`."""
+    pyproject = _read("pyproject.toml")
+    assert 'dynamic = ["version"]' in pyproject
+    assert '[tool.hatch.version]' in pyproject
+    assert 'path = "quotarouter/__init__.py"' in pyproject
+    assert "\nversion = " not in pyproject, "a literal version in pyproject would win over the package"
+
+
+def test_the_plugin_manifest_agrees_with_the_package():
+    from quotarouter import __version__
+
+    manifest = _read("hermes_plugin/plugin.yaml")
+    assert f"version: {__version__}" in manifest
+
+
+def test_a_dotenv_can_never_be_committed_but_its_template_is():
+    """The README tells people to keep keys in `./.env`. Nothing ignored that file."""
+    def ignored(rel: str) -> bool:
+        return subprocess.run(["git", "check-ignore", "-q", rel], cwd=REPO_ROOT).returncode == 0
+
+    assert ignored(".env"), "a filled-in key file must be ignored"
+    assert ignored(".env.local"), "so must every variant"
+    assert not ignored(".env.example"), "the template has to be tracked"
+
+
+def _load_example():
+    import importlib.util
+
+    path = REPO_ROOT / "examples" / "library.py"
+    assert path.is_file(), "the README links examples/library.py"
+    spec = importlib.util.spec_from_file_location("qr_example_library", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def test_the_documented_example_uses_the_real_api(capsys):
+    """The README sample once called `result.results` and `result.served_by`; neither exists.
+
+    The example is executable on purpose: a doc that cannot run is a doc that lies, and the
+    first thing a visitor copies is exactly this code.
+    """
+    from quotarouter.routing import RouteAttempt, RouteResult
+
+    example = _load_example()
+
+    class FakeRouter:
+        def run_search(self, query, limit):
+            return RouteResult(payload={"success": True, "data": {"web": [
+                {"title": "Example", "url": "https://example.com/"}]}}, stage="exa")
+
+        def run_extract(self, urls):
+            return RouteResult(payload=[
+                {"url": "https://example.com/", "content": "body", "title": "Example"},
+                {"url": "https://closed.example/", "error": "403 from origin"},
+            ], stage="jina")
+
+    assert example.search(FakeRouter(), "q") == 0
+    out = capsys.readouterr().out
+    assert "served by: exa" in out and "https://example.com/" in out
+
+    assert example.extract(FakeRouter(), ["a", "b"]) == 0
+    out = capsys.readouterr().out
+    assert "403 from origin" in out, "a page error must be visible, not swallowed"
+
+
+def test_the_documented_example_reports_a_total_failure(capsys):
+    from quotarouter.routing import RouteAttempt, RouteResult
+
+    example = _load_example()
+
+    class DeadRouter:
+        def run_search(self, query, limit):
+            return RouteResult(payload=None, stage="", attempts=[
+                RouteAttempt(stage="exa", ok=False, reason="quota: 402 Insufficient balance")])
+
+    assert example.search(DeadRouter(), "q") == 1
+    out = capsys.readouterr().out
+    assert "no search provider served" in out and "exa" in out
