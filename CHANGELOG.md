@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The README installs with `pip install quotarouter`: 0.3.1 is published on PyPI, so the
+  line that told the reader to install from a checkout (and promised PyPI "once it is")
+  was describing a state that no longer exists.
 
 ## [0.3.1] — 2026-11-23
 
