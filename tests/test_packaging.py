@@ -303,3 +303,39 @@ def test_the_documented_example_reports_a_total_failure(capsys):
     assert example.search(DeadRouter(), "q") == 1
     out = capsys.readouterr().out
     assert "no search provider served" in out and "exa" in out
+
+
+def test_every_annotation_in_the_package_resolves():
+    """`from __future__ import annotations` stores hints as strings, so a missing import in a
+    signature is invisible until something introspects it — a type checker, a framework, a user
+    with `py.typed` and an editor. `stages/base.py` used `Callable` without importing it.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+    import typing
+
+    import quotarouter
+
+    broken: list[str] = []
+    for module_info in pkgutil.walk_packages(quotarouter.__path__, "quotarouter."):
+        module = importlib.import_module(module_info.name)
+        targets = []
+        for name, obj in vars(module).items():
+            if inspect.isfunction(obj) and obj.__module__ == module.__name__:
+                targets.append((name, obj))
+            elif inspect.isclass(obj) and obj.__module__ == module.__name__:
+                for method_name, raw in vars(obj).items():
+                    # `staticmethod` and `classmethod` objects are not functions; skipping them
+                    # left `_map_urls` uncovered, and that is exactly where the missing import
+                    # was. Unwrap before deciding.
+                    method = getattr(raw, "__func__", raw)
+                    if inspect.isfunction(method):
+                        targets.append((f"{name}.{method_name}", method))
+        for label, function in targets:
+            try:
+                typing.get_type_hints(function)
+            except Exception as exc:  # NameError, TypeError on an odd annotation
+                broken.append(f"{module_info.name}:{label}: {exc}")
+
+    assert not broken, "unresolvable annotations: " + "; ".join(broken)

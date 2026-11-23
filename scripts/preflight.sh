@@ -14,6 +14,14 @@ check() { if [ "$1" -ne 0 ]; then fail=1; printf 'FAILED: %s\n' "$2"; fi; }
 step "offline suite"
 "$PY" -m pytest -q; check $? "offline suite"
 
+step "types"
+if "$PY" -m mypy --version >/dev/null 2>&1; then
+  # The package ships py.typed, so its annotations are a promise to every consumer's checker.
+  "$PY" -m mypy --ignore-missing-imports quotarouter; check $? "mypy"
+else
+  printf 'mypy not installed in %s: skipped (pip install ".[dev]")\n' "$PY"
+fi
+
 step "plugin validation"
 if command -v hermes >/dev/null 2>&1; then
   hermes plugins validate hermes_plugin 2>&1 | tail -3; check "${PIPESTATUS[0]}" "plugin validation"

@@ -50,9 +50,8 @@ def locked(path: Path, *, exclusive: bool = True) -> Iterator[None]:
     — quietly, in the one file an incident investigation reads. Appends and pruning now share
     this lock; appends are microseconds, so serialising them costs nothing.
     """
-    held: dict[str, int] = getattr(_held, "paths", None)
-    if held is None:
-        held = _held.paths = {}
+    held: dict[str, int] = getattr(_held, "paths", None) or {}
+    _held.paths = held
     key = str(path)
     if held.get(key):  # the same thread already holds it: a nested call must not deadlock
         held[key] += 1

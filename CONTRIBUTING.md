@@ -38,6 +38,7 @@ python -m pytest -q                       # offline suite
 python -m pytest -m "live and not e2e" -q # real vendors, needs keys, spends a fraction of a cent
 python -m pytest -m e2e -q                # end-to-end inside a real Hermes install
 hermes plugins validate hermes_plugin     # manifest and registration, if you touched the shim
+python -m mypy --ignore-missing-imports quotarouter   # the package ships py.typed
 python -m build && twine check dist/*     # packaging
 ```
 

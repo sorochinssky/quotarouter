@@ -15,10 +15,14 @@ run before every push; a green local gate is what "done" means here.
 4. `hermes plugins validate hermes_plugin` — catalog-admission gate. **Must say "Validation
    passed"**: it catches manifest drift, missing registration, and the `symlink_escape` that a
    convenience symlink inside the plugin directory causes.
-5. `python -m build && twine check dist/*` — packaging. A wheel that does not build is not
+5. `python -m mypy --ignore-missing-imports quotarouter` — the package ships `py.typed`, so its
+   annotations are a promise to every consumer's type checker. Skipped when mypy is absent.
+6. `python -m build && twine check dist/*` — packaging. A wheel that does not build is not
    publishable, no matter how green the tests are.
-6. `quotarouter status` from the built wheel in a clean venv — proves the package works without
+7. `quotarouter status` from the built wheel in a clean venv — proves the package works without
    the source tree (the plugin shim does not excuse a broken wheel).
+8. `python examples/library.py "query"` from that same venv — the code in the README, executed.
+   A documented example that cannot run is a documented bug.
 
 ## Invariants enforced by tests, not by review
 
@@ -34,6 +38,11 @@ run before every push; a green local gate is what "done" means here.
   still return.
 - **A degraded call is never silent.** When nothing serves, or the keyless tier serves, or a
   vendor parks itself out of quota, `alerts.notify` fires (subject to the cooldown).
+- **Every annotation resolves.** `from __future__ import annotations` makes a missing import in a
+  signature invisible until something introspects it; a test calls `typing.get_type_hints` on
+  every function and method in the package.
+- **The documentation is executable.** `examples/library.py` is the README sample, and a test
+  runs it against a fake router, so the doc cannot describe an API that does not exist.
 
 ## Rules of the road
 
