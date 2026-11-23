@@ -155,3 +155,25 @@ def test_call_writes_the_audit_line(env, capsys):
 
     assert record["chain_mode"] == "custom"
     assert record["source"] == "cli"
+
+
+# --- a deployment that forbids the override -------------------------------------------------
+def test_the_cli_refuses_a_pinned_call_when_the_deployment_forbids_it(env, monkeypatch, capsys):
+    """The kill switch is a deployment decision, so both commands must honour it and say which
+    setting did it — a caller who reads "use the configured order" has to know where to look."""
+    monkeypatch.setenv("QUOTAROUTER_ALLOW_CHAIN_OVERRIDE", "0")
+    config.reset_settings_for_tests()
+    router = routing.Router(stages=env["stages"], settings=config.settings(),
+                            ledger=env["router"].ledger)
+    monkeypatch.setattr(cli, "get_router", lambda: router, raising=False)
+
+    assert cli.cmd_call(_args("call", "search", "q", "--stages", "exa")) == 2
+    out = capsys.readouterr().out
+    assert "QUOTAROUTER_ALLOW_CHAIN_OVERRIDE" in out
+    assert env["stages"]["exa"].calls == [], "refused before the first network call"
+
+    assert cli.cmd_route(_args("route", "--chain", "one")) == 2
+    assert "QUOTAROUTER_ALLOW_CHAIN_OVERRIDE" in capsys.readouterr().out
+
+    # A call that names nothing is still allowed: the switch forbids overrides, not the product.
+    assert cli.cmd_call(_args("call", "search", "q", "--json")) == 0

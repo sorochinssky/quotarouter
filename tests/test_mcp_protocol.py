@@ -275,3 +275,27 @@ def test_the_tools_say_that_a_call_may_pin_and_that_pinning_can_cost_money():
         for option in ("stages", "chain", "fallback", "force", "budget", "max_cost_usd"):
             assert option in properties, f"{name} is missing {option}"
             assert option not in required, f"{name}: {option} is optional and must not be required"
+
+
+def test_a_refused_request_is_a_tool_error_and_the_session_survives(monkeypatch):
+    """The kill switch and a bad argument both come from the resolver. A client must see an
+    actionable error and be able to send the next request on the same connection."""
+
+    class Refusing(FakeRouter):
+        def run_search(self, query, limit, **options):
+            raise ValueError(
+                "per-call chains are disabled in this deployment "
+                "(QUOTAROUTER_ALLOW_CHAIN_OVERRIDE=0); use the configured order")
+
+    monkeypatch.setattr(mcp, "get_router", lambda: Refusing(), raising=False)
+    engine = mcp.McpServer()
+
+    first = engine.handle({"jsonrpc": "2.0", "id": 30, "method": "tools/call",
+                           "params": {"name": "web_search",
+                                      "arguments": {"query": "q", "stages": ["exa"]}}})
+    assert first["result"]["isError"] is True
+    assert "QUOTAROUTER_ALLOW_CHAIN_OVERRIDE" in text_of(first)
+
+    second = engine.handle({"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                            "params": {"name": "quota_status", "arguments": {}}})
+    assert second["result"]["isError"] is False, "one refusal must not poison the session"
