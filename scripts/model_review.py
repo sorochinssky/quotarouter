@@ -263,6 +263,10 @@ def ask_opencode(name: str, model: str, timeout: float = 300.0) -> dict:
         done = subprocess.run(
             ["opencode", "run", "-m", model, prompt],
             cwd=str(REPO), capture_output=True, text=True, timeout=timeout,
+            # Without this the CLI waits for stdin to close, which under a supervisor that
+            # hands it an open pipe never happens: the reviewer hangs until someone kills it,
+            # and the run is then blamed on the model. Four "hanging" models were this.
+            stdin=subprocess.DEVNULL,
         )
         raw = done.stdout
         parsed = extract_json(raw)
@@ -282,11 +286,22 @@ def ask_opencode(name: str, model: str, timeout: float = 300.0) -> dict:
 REVIEWERS = [
     ("nemotron", lambda: ask_openrouter("nemotron", "nvidia/nemotron-3-ultra-550b-a55b:free", PACKAGE_FILES)),
     ("ernie", lambda: ask_openrouter("ernie", "baidu/ernie-5.5-flash-preview:free", CORE_FILES)),
+    ("dots", lambda: ask_openrouter("dots", "dots-studio/dots-3-note-preview:free", CORE_FILES)),
+    ("particle", lambda: ask_openrouter("particle", "particle-ai/particle-1:free", CORE_FILES)),
+    ("flint", lambda: ask_openrouter("flint", "recursive/flint-v1.0:free", CORE_FILES)),
     ("glm-opencode", lambda: ask_opencode("glm-opencode", "opencode/glm-5.3-flash-free")),
     ("nemotron-opencode", lambda: ask_opencode("nemotron-opencode", "opencode/nemotron-3.5-lightning-free")),
     ("longcat", lambda: ask_opencode("longcat", "opencode/longcat-2.5-free")),
     ("mimo", lambda: ask_opencode("mimo", "opencode/mimo-v2.6-flash-free")),
 ]
+
+# Which vendors are behind each reviewer, so a report can say "independent" honestly: two models
+# from one vendor are one opinion (see docs/reviews/2026-11-22-model-review.md).
+FAMILIES = {
+    "nemotron": "nvidia", "ernie": "baidu", "dots": "dots-studio", "particle": "particle-ai",
+    "flint": "recursive", "glm-opencode": "zhipu", "nemotron-opencode": "nvidia",
+    "longcat": "meituan", "mimo": "xiaomi",
+}
 
 
 def main() -> int:
@@ -306,8 +321,8 @@ def main() -> int:
                 json.dumps(results[name], ensure_ascii=False, indent=2), encoding="utf-8")
             count = len(results[name].get("findings") or [])
             notes = "".join(flag for flag in ("_truncated",) if results[name].get(flag))
-            print(f"{name:20} {results[name].get('verdict'):9} findings={count:2} "
-                  f"{results[name].get('_model','')} {notes}")
+            print(f"{name:20} [{FAMILIES.get(name, '?'):12}] {results[name].get('verdict'):9} "
+                  f"findings={count:2} {results[name].get('_model','')} {notes}")
     return 0
 
 

@@ -75,3 +75,22 @@ def test_the_answer_records_which_code_state_was_reviewed():
     """A finding against code that has since changed must be identifiable as stale."""
     digest = harness.fingerprint(["quotarouter/ledger.py"])
     assert len(digest) == 12 and digest != harness.fingerprint(["quotarouter/alerts.py"])
+
+
+def test_the_opencode_transport_closes_stdin(monkeypatch, tmp_path):
+    """An open stdin makes `opencode run` wait forever; four reviewers were written off as
+    hanging models because of it."""
+    seen: dict[str, object] = {}
+
+    class Done:
+        stdout = '{"verdict": "approve", "summary": "ok", "findings": []}'
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return Done()
+
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+    monkeypatch.setattr(harness, "REPO", tmp_path)
+    harness.ask_opencode("probe", "opencode/mimo-v2.6-flash-free", timeout=5.0)
+    assert seen.get("stdin") is harness.subprocess.DEVNULL, "stdin must be closed, not inherited"
