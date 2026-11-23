@@ -58,3 +58,28 @@ def test_a_broken_resolver_cannot_break_a_call():
 
 def test_unknown_name_resolves_to_an_empty_string():
     assert env_source.resolve("QR_DEFINITELY_NOT_SET") == ""
+
+
+def test_a_foreign_host_finds_a_dotenv_in_the_working_directory(tmp_path, monkeypatch):
+    """Without this, only Hermes could find keys: every other MCP client ran keyless."""
+    from quotarouter import env_source
+
+    (tmp_path / ".env").write_text("EXA_API_KEY=from-cwd\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QUOTAROUTER_ENV_FILE", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    env_source._dotenv_cache = None
+    assert env_source.resolve("EXA_API_KEY") == "from-cwd"
+
+
+def test_the_explicit_env_file_still_wins(tmp_path, monkeypatch):
+    from quotarouter import env_source
+
+    (tmp_path / ".env").write_text("EXA_API_KEY=from-cwd\n", encoding="utf-8")
+    explicit = tmp_path / "chosen.env"
+    explicit.write_text("EXA_API_KEY=explicit\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QUOTAROUTER_ENV_FILE", str(explicit))
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    env_source._dotenv_cache = None
+    assert env_source.resolve("EXA_API_KEY") == "explicit"

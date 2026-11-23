@@ -8,8 +8,14 @@ order of lookups, and a host may register its own resolver:
     from quotarouter import env_source
     env_source.register_resolver(lambda name: my_conf(name))
 
-Order: `os.environ` (the most explicit source, easiest to override in a test) → an optional
-dotenv file (`QUOTAROUTER_ENV_FILE`) → registered resolvers. The first non-empty answer wins.
+Order: `os.environ` (the most explicit source, easiest to override in a test) → a dotenv file →
+registered resolvers. The first non-empty answer wins.
+
+The dotenv file is `QUOTAROUTER_ENV_FILE` when set, otherwise the conventional locations in
+order: `./.env` and `~/.config/quotarouter/.env`. Without those defaults the package only found
+its keys inside Hugging-Hermes, because a host registers a resolver there — every other MCP
+client silently ran on the anonymous tier with `credential: false` for vendors that had keys on
+the same machine.
 """
 
 from __future__ import annotations
@@ -48,9 +54,24 @@ def clear_resolvers() -> None:
     _resolvers.clear()
 
 
-def _dotenv_path() -> Optional[Path]:
+DEFAULT_ENV_FILES = ("~/.config/quotarouter/.env",)
+
+
+def _dotenv_paths() -> list[Path]:
+    """Every place a key may live, in order. Explicit setting wins, conventions follow."""
     raw = (os.environ.get("QUOTAROUTER_ENV_FILE", "") or "").strip()
-    return Path(raw).expanduser() if raw else None
+    if raw:
+        return [Path(raw).expanduser()]
+    candidates = [Path.cwd() / ".env"] + [Path(entry).expanduser() for entry in DEFAULT_ENV_FILES]
+    return [path for path in candidates if path.is_file()]
+
+
+def _first_dotenv_value(name: str) -> str:
+    for path in _dotenv_paths():
+        value = (_read_dotenv(path).get(name, "") or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -78,11 +99,9 @@ def resolve(name: str) -> str:
     value = (os.environ.get(name, "") or "").strip()
     if value:
         return value
-    path = _dotenv_path()
-    if path is not None:
-        value = (_read_dotenv(path).get(name, "") or "").strip()
-        if value:
-            return value
+    value = _first_dotenv_value(name)
+    if value:
+        return value
     for resolver in list(_resolvers):
         try:
             value = (resolver(name) or "").strip()

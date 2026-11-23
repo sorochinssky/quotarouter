@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import alerts, config, ledger as ledger_mod, retention
-from .integrations.hermes import get_router
+from .routing import shared_router as get_router
 
 
 def _fmt_int(value: float) -> str:
@@ -97,7 +97,12 @@ def cmd_route(args: argparse.Namespace) -> int:
         for index, stage in enumerate(usable):
             print(f"  {'usable' if index == 0 else 'next  '}: {stage.name}")
         if not usable:
-            print("  unusable: nothing can serve this call")
+            # The anonymous tier is not a candidate (it has no quota to spend), but it will serve
+            # the call — saying "unusable" while the call succeeds is a lie the operator acts on.
+            settings = config.settings(refresh=True)
+            fallback = router.stages.get("keyless") if settings.keyless_last_resort else None
+            print("  fallback: keyless (anonymous tier)" if fallback is not None
+                  else "  unusable: nothing can serve this call")
         for vendor, reason in router.skips(capability):
             print(f"  skip {vendor}: {reason}")
     return 0

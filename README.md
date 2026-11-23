@@ -13,8 +13,8 @@ rescue fires *after* the failure, again on every call.
   `Router.run_extract()` pick a stage and account for it.
 - `quotarouter.integrations.hermes` — a Hermes web-search provider. The model keeps calling
   `web_search` / `web_extract`; routing happens underneath.
-- `quotarouter.integrations.mcp` — an MCP stdio server for Claude Desktop, Cursor, or any
-  other MCP client (`web_search`, `web_extract`, `quota_status`).
+- `quotarouter.integrations.mcp` — an MCP stdio server for Claude Desktop, Cursor, Codex,
+  opencode or any other MCP client (`web_search`, `web_extract`, `quota_status`, `quota_probe`).
 - `quotarouter.cli` — status, quota probe, "who would serve the next call", live selftest.
 
 The choice is made from **remaining quota in a persistent ledger**, not from an error that
@@ -32,6 +32,40 @@ already happened. A pause survives a restart and expires on the vendor's own res
 | Keyless vendor first on extract (saves credits) | — | yes, Jina Reader |
 | Audit: why this stage | partly | `routes.jsonl` + `quotarouter route` |
 | Usable outside Hermes | no | yes, core library + MCP server |
+
+## Install: any MCP client (not only Hermes)
+
+The server speaks plain JSON-RPC 2.0 over stdio and needs nothing from Hermes. Register the
+command as a local MCP server in the client's own config:
+
+```json
+{
+  "mcp": {
+    "quotarouter": {
+      "type": "local",
+      "enabled": true,
+      "command": ["python3", "-m", "quotarouter", "serve-mcp"],
+      "environment": {"QUOTAROUTER_ENV_FILE": "/home/me/.config/quotarouter/.env"}
+    }
+  }
+}
+```
+
+(or `command: ["quotarouter", "serve-mcp"]` once the package is installed — the console script
+is on `PATH`.)
+
+**Where the vendor keys come from.** `os.environ` first, then a dotenv file:
+`QUOTAROUTER_ENV_FILE` if set, otherwise `./.env`, otherwise `~/.config/quotarouter/.env`.
+Inside Hermes the adapter adds the profile's `.env` as one more source; nothing else is
+Hermes-specific. If no key is found the router does not fail — it answers from the anonymous
+tier and says so on stderr, because a foreign host that silently degraded would look like it
+was working.
+
+Verified against a real third-party agent, not only in unit tests: `opencode` connects (its
+`mcp list` reports `quotarouter connected`), calls `quota_status` and `web_search`, and gets
+real URLs back. The same four tools were exercised through the reference `mcp` SDK client:
+`initialize` → protocol `2025-11-25`, `tools/list`, `tools/call`, a bad argument returning
+`isError` without killing the server.
 
 ## Install: Hermes
 

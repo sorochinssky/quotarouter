@@ -117,7 +117,12 @@ class KeylessStage(Stage):
 
     @staticmethod
     def _parse_rows(text: str, limit: int) -> list[dict[str, Any]]:
-        """Accept either a JSON list of hits or the vendor's prose blocks."""
+        """Accept either a JSON list of hits or the vendor's prose blocks.
+
+        The prose blocks are `Title:` / `URL:` / `Published:` / `Author:` / `Highlights:` followed
+        by the page body. Reading them line by line attached whatever came after the URL, which
+        was `Published: N/A` — so every result arrived with an empty title and a useless snippet.
+        """
         try:
             data = json.loads(text)
             candidates = data if isinstance(data, list) else (data.get("results") or data.get("web") or [])
@@ -130,17 +135,30 @@ class KeylessStage(Stage):
                 return rows[:limit]
         except (ValueError, AttributeError):
             pass
-        rows = []
-        for line in text.splitlines()[:limit]:
-            line = line.strip()
-            for prefix in ("Title:", "URL:", "Snippet:"):
-                if line.startswith(prefix):
-                    line = line[len(prefix):].strip()
-            if line.startswith("http"):
-                rows.append(types.web_hit(line, "", "", len(rows) + 1))
-            elif rows and not rows[-1]["description"]:
-                rows[-1]["description"] = line
-        return rows
+
+        blocks: list[dict[str, str]] = []
+        current: dict[str, str] = {}
+        in_body = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("Title:"):
+                if current.get("url"):
+                    blocks.append(current)
+                current = {"url": "", "title": line[len("Title:"):].strip(), "description": ""}
+                in_body = False
+            elif line.startswith("URL:") and current:
+                current["url"] = line[len("URL:"):].strip()
+            elif line.startswith(("Published:", "Author:")) and current:
+                continue
+            elif line.startswith("Highlights:") and current:
+                in_body = True
+            elif in_body and current and not current["description"]:
+                if line and not line.startswith(("#", ">", "|", "-", "*")) and len(line) > 20:
+                    current["description"] = line[:400]
+        if current.get("url"):
+            blocks.append(current)
+        return [types.web_hit(b["url"], b.get("title", ""), b.get("description", ""), i)
+                for i, b in enumerate(blocks[:limit], start=1)]
 
     def extract(self, urls: list[str]) -> list[dict[str, Any]]:
         def one(url: str) -> dict[str, Any]:

@@ -49,12 +49,8 @@ _SHARED_LOCK = threading.Lock()
 
 
 def get_router() -> routing.Router:
-    """The process-wide router, so the CLI and the provider share one ledger instance."""
-    global _SHARED
-    with _SHARED_LOCK:
-        if _SHARED is None:
-            _SHARED = RouterProvider()
-        return _SHARED.router
+    """Kept for callers that still import it here; the instance itself is the core's."""
+    return routing.shared_router()
 
 
 class RouterProvider(_ProviderBase):  # type: ignore[misc,valid-type]

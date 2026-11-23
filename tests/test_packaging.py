@@ -196,3 +196,11 @@ def test_the_review_notes_are_tracked_while_raw_answers_are_not():
 
     assert ignored("reviews/nemotron.json"), "raw model answers must stay out of git"
     assert not ignored("docs/reviews/2026-11-22-model-review.md"), "the review notes must be tracked"
+
+
+def test_the_cli_builds_its_router_from_the_core():
+    """The CLI is what an MCP client starts. Building its router from the Hermes adapter made
+    every non-Hermes host depend on Hermes' key lookup."""
+    from quotarouter import cli, routing
+
+    assert cli.get_router is routing.shared_router

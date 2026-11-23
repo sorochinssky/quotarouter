@@ -261,3 +261,30 @@ def test_keyless_treats_a_tool_error_as_a_failure_not_a_page():
     pages = KeylessStage().extract(["https://example.com"])
     assert pages[0].get("content") in (None, ""), pages[0]
     assert "MCP error" in (pages[0].get("error") or ""), pages[0]
+
+
+def test_keyless_keeps_the_title_and_the_first_real_paragraph():
+    """The prose blocks are Title/URL/Published/Author/Highlights + body. Reading them line by
+    line put "Published: N/A" in the snippet, so every result arrived with an empty title."""
+    prose = """Title: Versioning
+URL: https://modelcontextprotocol.io/docs/learn/versioning
+Published: N/A
+Author: N/A
+Highlights:
+# Versioning
+
+The Model Context Protocol uses string-based version identifiers following the format
+
+Title: Blog
+URL: https://blog.modelcontextprotocol.io/posts/versioning
+Published: N/A
+Author: N/A
+Highlights:
+Posts about versioning and backwards compatibility in the protocol
+"""
+    rows = KeylessStage._parse_rows(prose, 5)
+    assert [r["url"] for r in rows] == ["https://modelcontextprotocol.io/docs/learn/versioning",
+                                        "https://blog.modelcontextprotocol.io/posts/versioning"]
+    assert rows[0]["title"] == "Versioning"
+    assert rows[0]["description"].startswith("The Model Context Protocol uses")
+    assert "N/A" not in rows[0]["description"]

@@ -359,3 +359,26 @@ def test_daemon_cycle_prunes_the_audit_trail(monkeypatch):
                         lambda *a, **k: calls.append("prune") or {})
     cli.run_daemon(0.0, 1, sleep=lambda _s: None, out=lambda _line: None)
     assert calls == ["probe", "prune"], calls
+
+
+def test_route_says_the_anonymous_tier_will_serve_when_nothing_is_configured(monkeypatch, capsys):
+    """`unusable` while the call actually succeeds from the keyless tier is a lie operators act on."""
+    import argparse
+
+    class NoStages:
+        stages = {"keyless": object()}
+
+        def candidates(self, capability):
+            return [], [("exa", "no EXA_API_KEY set")]
+
+        def skips(self, capability):
+            return [("exa", "no EXA_API_KEY set")]
+
+        def _noop(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(cli, "get_router", lambda: NoStages(), raising=False)
+    monkeypatch.setenv("QUOTAROUTER_ALLOW_KEYLESS", "1")
+    cli.cmd_route(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert "fallback: keyless" in out and "unusable" not in out, out

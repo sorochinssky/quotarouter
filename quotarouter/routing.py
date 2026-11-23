@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -78,6 +79,31 @@ class RouteResult:
 class TriggerReason:
     stage: str
     reason: str
+
+
+_SHARED: Optional["Router"] = None
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_router() -> "Router":
+    """The process-wide router.
+
+    It lives in the core, not in an integration: the CLI and the MCP server are started by
+    whatever agent is using them, and importing the Hermes adapter to build a router made every
+    non-Hermes host depend on Hermes' own key lookup.
+    """
+    global _SHARED
+    with _SHARED_LOCK:
+        if _SHARED is None:
+            _SHARED = Router()
+        return _SHARED
+
+
+def reset_shared_router() -> None:
+    """Test hook: forget the process-wide instance."""
+    global _SHARED
+    with _SHARED_LOCK:
+        _SHARED = None
 
 
 class Router:
@@ -321,7 +347,14 @@ class Router:
             if served is not None:
                 result.payload = served
                 result.stage = KEYLESS_NAME
-                logger.warning("quotarouter: every configured stage is out; %s served by the keyless tier", capability)
+                configured = [s.reason for s in skipped if s.reason.startswith("no ")]
+                logger.warning(
+                    "quotarouter: %s served by the keyless tier (%s)",
+                    capability,
+                    "no vendor is configured — set the API keys or QUOTAROUTER_ENV_FILE"
+                    if len(configured) == len(skipped) and configured else
+                    "every configured stage is out of quota or parked",
+                )
                 return result
         return result
 
