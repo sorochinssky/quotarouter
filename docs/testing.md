@@ -252,8 +252,9 @@ configured order, so the tests are split the same way: the file, the decision, t
 ## Debugging a failed step
 
 1. `FAIL plugin_registry` → the plugin directory was not found or not enabled: check
-   `plugins.enabled`, and that `hermes_plugin/` holds a real copy of the package (the plugin
-   validator refuses symlinks: `symlink_escape`).
+   `plugins.enabled`, and that `hermes_plugin/` reaches the package through its own shim module
+   rather than a symlink (the plugin validator refuses symlinks: `symlink_escape`); the shim tries
+   the installed copy first and the repository root second, so a checkout works either way.
 2. `FAIL search_tool` with `success: false` → read the error: it lists every stage with the
    reason it was skipped (`no EXA_API_KEY set`, `quota spent 10/10 usd`, …).
 3. `FAIL extract_tool` → open `<home>/state/quotarouter/routes.jsonl`; the chain line carries
