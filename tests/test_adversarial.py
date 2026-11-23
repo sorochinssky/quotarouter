@@ -84,7 +84,11 @@ def test_recorded_deepseek_zero_balance_parks_the_stage(keys, monkeypatch):
 
     assert router.run_search("q", 3).stage == "exa"
     deepseek = router.ledger.get("deepseek")
-    assert deepseek.pause_kind == "disabled"
+    # Parked by the machine, not stopped by an operator: the pause has a deadline and will be
+    # re-probed. `disabled` here used to mean `inf`, which only a human could lift.
+    assert deepseek.pause_kind == types.QUOTA
+    assert deepseek.pause_origin == "auto"
+    assert deepseek.paused_until and deepseek.paused_until != float("inf")
     assert "balance empty" in deepseek.pause_reason
 
 

@@ -126,6 +126,11 @@ class Settings:
     log_keep_days: int = field(default_factory=lambda: int(_float("LOG_KEEP_DAYS", 30)))
     # How often `quotarouter daemon` (or the systemd timer it prints) refreshes vendor balances.
     probe_interval: float = field(default_factory=lambda: _float("PROBE_INTERVAL", 21600.0))
+    # A vendor parked because its account cannot pay is retried after this long, doubling per
+    # consecutive failure up to `quota_retry_max`. Zero means "never retry on a timer" (the old
+    # behaviour: wait for the monthly window or for an operator).
+    quota_retry: float = field(default_factory=lambda: _float("QUOTA_RETRY", 900.0))
+    quota_retry_max: float = field(default_factory=lambda: _float("QUOTA_RETRY_MAX", 21600.0))
 
     @property
     def ledger_path(self) -> Path:

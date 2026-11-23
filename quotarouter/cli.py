@@ -46,6 +46,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             "unit": unit,
             "window": window,
             "paused": _pause(state, now),
+            "pause_origin": ledger_mod.pause_origin_of(state) or None,
+            "retry_at": _iso(state.paused_until) if state.is_paused(now) else None,
             "source": state.source,
             "search": bool(stage and stage.capability.search),
             "extract": bool(stage and stage.capability.extract),
@@ -87,6 +89,26 @@ def cmd_probe(args: argparse.Namespace) -> int:
             print(f"{name:10} {_fmt_int(float(left))} {info.get('unit', '')} left "
                   f"(limit {_fmt_int(float(info.get('limit') or 0))}, source {info.get('source')})")
     return 0 if all(v.get("remaining") is not None for v in results.values()) else 1
+
+
+def cmd_recheck(args: argparse.Namespace) -> int:
+    """Ask the parked vendors whether they can pay again, and let the machine-parked ones back.
+
+    An operator stop is never lifted here: `recheck` answers "is the vendor healthy", not
+    "do I still mean it".
+    """
+    router = get_router()
+    result = router.recheck()
+    returned = result["returned"]
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    for name in returned:
+        print(f"{name}: back in service (the account can pay again)")
+    if not returned:
+        paused = [name for name, info in result["probe"].items() if info.get("paused")]
+        print("nothing came back" + (f" — still out: {', '.join(paused)}" if paused else ""))
+    return 0
 
 
 def cmd_route(args: argparse.Namespace) -> int:
@@ -308,17 +330,23 @@ def cmd_serve_mcp(args: argparse.Namespace) -> int:
 
 
 def _pause(state: ledger_mod.VendorState, now: float) -> str:
+    """One column that says both what happened and who is responsible for undoing it."""
     if not state.is_paused(now):
         return "-"
+    if ledger_mod.pause_origin_of(state) == ledger_mod.ORIGIN_OPERATOR:
+        return f"stopped: {state.pause_reason or state.pause_kind}"
     left = state.pause_left(now)
     if left == float("inf"):
-        return state.pause_kind
+        # No deadline and not an operator stop: a pause written before machine pauses had one.
+        # The next call re-probes the balance and replaces this with a real retry deadline.
+        return f"{state.pause_kind} (machine, re-probed)"
     hours = left / 3600.0
-    return f"{state.pause_kind} {hours:.1f}h" if hours >= 1 else f"{state.pause_kind} {int(left // 60)}m"
+    span = f"{hours:.1f}h" if hours >= 1 else f"{int(left // 60)}m"
+    return f"{state.pause_kind} {span} (auto)"
 
 
 def _iso(ts: Optional[float]) -> str:
-    if ts is None:
+    if ts is None or ts == float("inf"):
         return "-"
     import datetime as dt
 
@@ -339,6 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
     probe = sub.add_parser("probe", help="ask vendors for their real remaining quota and store it")
     probe.add_argument("--json", action="store_true")
     probe.set_defaults(func=cmd_probe)
+
+    recheck = sub.add_parser(
+        "recheck",
+        help="re-probe parked vendors and release the pauses the machine took, now")
+    recheck.add_argument("--json", action="store_true")
+    recheck.set_defaults(func=cmd_recheck)
 
     prune = sub.add_parser("prune", help="drop audit lines older than N days")
     prune.add_argument("--days", type=int, default=None,

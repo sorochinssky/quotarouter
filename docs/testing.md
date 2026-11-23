@@ -194,6 +194,10 @@ first six levels never entered. Each file below exists because something there w
 - `test_stage_base.py` — parallel fetching preserving the caller's order, a single worker
   staying sequential, and an adapter that raises a bare exception being parked as `transient`
   instead of killing the call.
+- `test_self_healing.py` — the two kinds of pause: an empty balance parks with a deadline and is
+  released by the next successful probe (no `enable`), an operator stop survives a vendor that
+  says it can pay, the retry doubles up to six hours, and a record written before the origin
+  field existed is read by its reason.
 
 ### What the coverage run itself found
 

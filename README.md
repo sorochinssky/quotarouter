@@ -216,7 +216,7 @@ itself stays sequential — one stage at a time — so a stage still cannot hide
 
 | What the vendor returned | Kind | What the router does |
 |---|---|---|
-| 402 / `Insufficient Balance` / `NO_MORE_CREDITS` | `quota` | park until the window resets (24 h if unknown) |
+| 402 / `Insufficient Balance` / `NO_MORE_CREDITS` | `quota` | park until the window resets, else retry in 15 min doubling to 6 h |
 | 401 / 403 unrelated to quota | `auth` | park 24 h — a human must look |
 | 429 | `throttle` | pause per `Retry-After`, else 60 s with doubling |
 | 5xx, timeout, connection reset | `transient` | pause 60 s, try the next stage |
@@ -226,6 +226,30 @@ itself stays sequential — one stage at a time — so a stage still cannot hide
 
 That last row matters. `403 from origin` is the website answering, not the vendor failing.
 Spending a second vendor's credits on a page that is closed to everyone is waste.
+
+### Who parked a vendor, and who can unpark it
+
+Every pause records its origin: `auto` (the router saw a reason) or `operator` (`disable`).
+The two behave differently on purpose, because the reason behind them resolves differently.
+
+- **`auto`** — lifts itself. The vendor's balance endpoint is free, so a paused stage is still
+  probed on every call (rate-limited to once a minute): the moment it reports room again, the
+  pause is dropped and the stage is back in the chain. A retry deadline is only a backstop for
+  the next time the balance has not come back — 15 minutes, doubling per consecutive failure, up
+  to six hours. Top up an account and the next search uses it; no `enable` needed.
+- **`operator`** — `quotarouter disable <vendor>` writes an infinite deadline that no probe,
+  no top-up and no window roll may lift. Only `quotarouter enable <vendor>` does.
+
+`quotarouter status` shows which one you are looking at: `quota 29m (auto)` versus
+`stopped: chasing a bug`. `quotarouter recheck` runs the probe sweep immediately instead of
+waiting for the next search — useful right after a top-up, and safe to run from cron.
+
+Knobs: `QUOTAROUTER_QUOTA_RETRY` (default 900 s, `0` restores the old 24 h park) and
+`QUOTAROUTER_QUOTA_RETRY_MAX` (default 21600 s).
+
+Records written by an older version carried no origin. They are read by their reason: a
+`disabled` pause whose text came from a balance probe is treated as `auto`, one that says
+"operator" stays an operator stop.
 
 ## Testing
 

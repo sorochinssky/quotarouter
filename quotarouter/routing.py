@@ -152,7 +152,13 @@ class Router:
         state = self.ledger.get(stage.name)
         blocked = getattr(stage, "blocked_reason", "")
         if blocked:
-            self.ledger.disable(stage.name, blocked)
+            # The account cannot pay right now. This is a machine pause, not an operator stop:
+            # it has to clear itself as soon as the vendor reports room again (a top-up, a new
+            # month), which `set_limit` does. `disable` here was the bug — it wrote an `inf`
+            # deadline that only `quotarouter enable` could lift.
+            retry = self._quota_retry_seconds(stage.name)
+            self.ledger.pause(stage.name, self.clock() + retry, types.QUOTA, blocked,
+                              origin=ledger_mod.ORIGIN_AUTO, replace=True)
 
     def _ensure_default_limit(self, stage: Stage) -> None:
         allowance = stage.monthly_allowance
@@ -193,8 +199,38 @@ class Router:
                 "source": state.source,
                 "reset_at": ledger_mod.iso(state.reset_at),
                 "paused": _pause_text(state, self.clock()) if state.is_paused(self.clock()) else None,
+                "pause_kind": state.pause_kind or None,
+                "pause_origin": ledger_mod.pause_origin_of(state) or None,
+                "retry_at": ledger_mod.iso(state.paused_until) if state.is_paused(self.clock()) else None,
             }
         return report
+
+    def recheck(self) -> dict[str, Any]:
+        """Probe the vendors that were parked by the machine, and let them back in if they answer.
+
+        This is the manual version of what happens on its own during a call: a paused stage is
+        still probed (the balance endpoints are free), and a positive answer clears the pause
+        inside `set_limit`. `quotarouter recheck` exists because an operator who has just topped
+        an account up should not have to wait for the next search to see it.
+
+        An operator stop is never lifted here — that is what `enable` is for.
+        """
+        # Plain values, not the state objects: `snapshot()` hands out the live records, so a
+        # probe that clears a pause would also clear the "before" copy and hide the change.
+        now = self.clock()
+        before = {
+            name: (state.paused_until, ledger_mod.pause_origin_of(state))
+            for name, state in self.ledger.snapshot().items()
+            if state.is_paused(now)
+        }
+        report = self.probe_all(force=True)
+        returned: list[str] = []
+        for name, (paused_until, origin) in before.items():
+            if origin == ledger_mod.ORIGIN_OPERATOR:
+                continue
+            if not self.ledger.get(name).is_paused(self.clock()):
+                returned.append(name)
+        return {"returned": returned, "probe": report}
 
     def skips(self, capability: str) -> list[tuple[str, str]]:
         """Vendors that cannot serve this call right now, with the reason (for `router route`)."""
@@ -223,7 +259,8 @@ class Router:
             self._sync_quota(stage)
             state = self.ledger.get(name)
             if state.is_paused(now):
-                if state.pause_kind == "quota" and state.reset_at and now >= state.reset_at:
+                if (state.pause_kind == "quota" and state.reset_at and now >= state.reset_at
+                        and ledger_mod.pause_origin_of(state) != ledger_mod.ORIGIN_OPERATOR):
                     self.ledger.enable(name)  # the window rolled: try again
                 else:
                     skipped.append(TriggerReason(name, _pause_text(state, now)))
@@ -424,17 +461,31 @@ class Router:
         result.attempts.append(RouteAttempt(stage.name, True, spent=spent, remaining=state.remaining()))
         return outcome.payload
 
+    def _quota_retry_seconds(self, name: str) -> float:
+        """How long a machine quota pause lasts: a window end if known, else an escalating retry."""
+        state = self.ledger.get(name)
+        settings = self.settings
+        if settings.quota_retry <= 0:
+            # Opt-out: behave like the old 24h park, or the window if we know it earlier.
+            return 24 * 3600.0
+        retry = ledger_mod.quota_retry_seconds(
+            state.consecutive_failures + 1, base=settings.quota_retry, cap=settings.quota_retry_max)
+        if state.reset_at and state.reset_at > self.clock():
+            return max(60.0, min(retry, state.reset_at - self.clock()))
+        return retry
+
     def _pause(self, stage: Stage, kind: str, message: str, retry_after: Optional[float] = None) -> None:
         state = self.ledger.get(stage.name)
         if kind == types.AUTH:
             until = self.clock() + 24 * 3600
         elif kind == types.QUOTA:
-            # Park until the window resets when we know it; otherwise 24h and re-probe then.
-            until = state.reset_at if state.reset_at and state.reset_at > self.clock() else self.clock() + 24 * 3600
+            until = self.clock() + self._quota_retry_seconds(stage.name)
         else:
             attempt = state.consecutive_failures + 1
             until = self.clock() + ledger_mod.backoff_seconds(kind, attempt, retry_after)
-        self.ledger.pause(stage.name, until, kind, message)
+        # Deadlines are computed from *now*, so they replace the old one. Merging with `max()`
+        # turned every repeated failure into a longer stop than any single backoff asked for.
+        self.ledger.pause(stage.name, until, kind, message, replace=True)
         logger.info("quotarouter: %s paused (%s) until %s — %s", stage.name, kind,
                     ledger_mod.iso(until), message[:200])
 
@@ -511,11 +562,15 @@ def _is_page_specific(entry: dict[str, Any]) -> bool:
 
 def _pause_text(state: "ledger_mod.VendorState", now: float) -> str:
     if state.pause_kind == "disabled":
-        return f"disabled by operator ({state.pause_reason})"
+        return f"stopped by operator ({state.pause_reason})"
     left = max(0.0, (state.paused_until or now) - now)
-    if left >= 3600:
-        return f"paused {left / 3600:.1f}h ({state.pause_kind}: {state.pause_reason})"
-    return f"paused {int(left)}s ({state.pause_kind}: {state.pause_reason})"
+    if left == float("inf"):
+        return f"machine pause, re-probed on the next call ({state.pause_kind}: {state.pause_reason})"
+    shown = f"{left / 3600:.1f}h" if left >= 3600 else f"{int(left)}s"
+    detail = f"{state.pause_kind}: {state.pause_reason}"
+    if ledger_mod.pause_origin_of(state) == ledger_mod.ORIGIN_OPERATOR:
+        return f"stopped by operator ({detail})"
+    return f"paused {shown}, retries by itself ({detail})"
 
 
 def _build_default_stages() -> dict[str, Stage]:

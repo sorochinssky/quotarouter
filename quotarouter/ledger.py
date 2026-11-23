@@ -45,7 +45,14 @@ def utcnow() -> float:
 
 
 def iso(ts: Optional[float]) -> Optional[str]:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds") if ts else None
+    """Epoch seconds as an ISO string; None for "no deadline".
+
+    An operator stop is stored as `inf`, which is not a timestamp any platform can format —
+    printing it raised `OverflowError` in the middle of a probe report.
+    """
+    if ts is None or ts == float("inf"):
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def month_key(ts: Optional[float] = None) -> str:
@@ -57,6 +64,13 @@ def next_month_epoch(ts: Optional[float] = None) -> float:
     dt = datetime.fromtimestamp(ts if ts is not None else utcnow(), tz=timezone.utc)
     year, month = (dt.year + 1, 1) if dt.month == 12 else (dt.year, dt.month + 1)
     return datetime(year, month, 1, tzinfo=timezone.utc).timestamp()
+
+
+# Who parked a vendor. The distinction is the whole point: a pause the machine took because a
+# balance was empty must clear itself when the balance comes back, while a stop the operator
+# ordered must survive anything a probe says.
+ORIGIN_AUTO = "auto"
+ORIGIN_OPERATOR = "operator"
 
 
 @dataclass
@@ -72,6 +86,7 @@ class VendorState:
     paused_until: Optional[float] = None
     pause_kind: str = ""
     pause_reason: str = ""
+    pause_origin: str = ""                 # ORIGIN_AUTO | ORIGIN_OPERATOR; "" on legacy records
     consecutive_failures: int = 0
     last_success: Optional[float] = None
     last_failure: Optional[float] = None
@@ -87,7 +102,7 @@ class VendorState:
         return self.paused_until is not None and self.paused_until > (now if now is not None else utcnow())
 
     def pause_left(self, now: Optional[float] = None) -> float:
-        """Seconds left on the pause; 0 when not paused. Infinite off a `disable`."""
+        """Seconds left on the pause; 0 when not paused. Infinite off an operator stop."""
         moment = now if now is not None else utcnow()
         if self.paused_until is None or self.paused_until <= moment:
             return 0.0
@@ -227,11 +242,15 @@ class Ledger:
             if state.period != want_period:
                 state.period = want_period
                 state.used = 0.0
-                # A fresh window clears a quota pause: the vendor will answer again.
-                if state.pause_kind == "quota":
-                    state.paused_until = None
-                    state.pause_kind = ""
-                    state.pause_reason = ""
+            # A machine pause on an empty balance is over the moment the vendor reports room
+            # again, either because the window rolled or because someone topped the account up.
+            # Doing this only on a window roll meant "top up the balance" was indistinguishable
+            # from a dead vendor until an operator ran `enable` by hand.
+            if state.pause_kind == "quota" and pause_origin_of(state) != ORIGIN_OPERATOR and float(limit) > 0:
+                state.paused_until = None
+                state.pause_kind = ""
+                state.pause_reason = ""
+                state.pause_origin = ""
             state.limit = float(limit)
             state.source = source
             if reset_at is not None:
@@ -275,23 +294,40 @@ class Ledger:
                 state.paused_until = None
                 state.pause_kind = ""
                 state.pause_reason = ""
+                state.pause_origin = ""
             self._save()
             return state
 
-    def pause(self, vendor: str, until: float, kind: str, reason: str = "") -> VendorState:
+    def pause(self, vendor: str, until: float, kind: str, reason: str = "",
+              origin: str = ORIGIN_AUTO, replace: bool = False) -> VendorState:
+        """Park a vendor. `origin` says whether the machine or the operator did it.
+
+        `replace=False` keeps the later of the two deadlines, which is what a repeated failure
+        wants. An escalating retry passes `replace=True`: it computes the deadline from *now*,
+        and `max()` against the previous one would turn a 15-minute retry into a permanent stop.
+        An operator stop is never shortened: `disable` reports `origin=operator`, and this method
+        refuses to replace it with a shorter machine pause.
+        """
         with self._transaction():
             state = self.get(vendor)
-            state.paused_until = max(state.paused_until or 0.0, float(until))
+            current = state.paused_until or 0.0
+            if replace and pause_origin_of(state) != ORIGIN_OPERATOR and not (
+                    state.pause_kind == "disabled" and pause_origin_of(state) == ORIGIN_OPERATOR):
+                state.paused_until = float(until)
+            else:
+                state.paused_until = max(current, float(until))
             state.pause_kind = kind
             state.pause_reason = reason[:300]
+            state.pause_origin = origin
             state.consecutive_failures += 1
             state.last_failure = utcnow()
             self._save()
             return state
 
     def disable(self, vendor: str, reason: str = "disabled by operator") -> VendorState:
-        """Operator kill switch: paused forever (until `enable`)."""
-        return self.pause(vendor, float("inf"), "disabled", reason)
+        """Operator kill switch: paused forever (until `enable`), and no probe may clear it."""
+        return self.pause(vendor, float("inf"), "disabled", reason,
+                          origin=ORIGIN_OPERATOR, replace=True)
 
     def enable(self, vendor: str) -> VendorState:
         with self._transaction():
@@ -299,6 +335,7 @@ class Ledger:
             state.paused_until = None
             state.pause_kind = ""
             state.pause_reason = ""
+            state.pause_origin = ""
             self._save()
             return state
 
@@ -325,7 +362,40 @@ class Ledger:
 def _state_from_dict(vendor: str, data: dict[str, Any]) -> VendorState:
     known = {f for f in VendorState.__dataclass_fields__}  # type: ignore[attr-defined]
     clean = {k: v for k, v in (data or {}).items() if k in known and k != "vendor"}
-    return VendorState(vendor=vendor, **clean)
+    state = VendorState(vendor=vendor, **clean)
+    if state.pause_kind and not state.pause_origin:
+        # Written before the field existed. Keep the record, and let `pause_origin_of` decide
+        # from the reason whether the operator or the machine parked it.
+        state.pause_origin = pause_origin_of(state)
+    return state
+
+
+def pause_origin_of(state: VendorState) -> str:
+    """Who parked this vendor, including records written before the field existed.
+
+    A legacy `disabled` record counts as an operator stop only when its reason says so: the
+    machine used the same call for "the account cannot pay", and that is exactly the stop which
+    must not outlive the balance.
+    """
+    stored = getattr(state, "pause_origin", "") or ""
+    if stored in (ORIGIN_AUTO, ORIGIN_OPERATOR):
+        return stored
+    if not state.pause_kind:
+        return ""
+    if state.pause_kind == "disabled":
+        return ORIGIN_OPERATOR if "operator" in (state.pause_reason or "").lower() else ORIGIN_AUTO
+    return ORIGIN_AUTO
+
+
+def quota_retry_seconds(attempt: int, base: float = 900.0, cap: float = 21600.0) -> float:
+    """How long a vendor parked for an unfunded account waits before it is tried again.
+
+    A quota pause used to be a flat 24 hours, so "I topped the balance up" and "the vendor is
+    gone" looked the same until an operator ran `enable`. The retry now starts at 15 minutes and
+    doubles per consecutive failure up to six hours: cheap to be wrong, never permanent.
+    """
+    step = max(0, int(attempt) - 1)
+    return float(min(cap, base * math.pow(2, step)))
 
 
 def backoff_seconds(kind: str, attempt: int, retry_after: Optional[float] = None) -> float:
