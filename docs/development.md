@@ -22,10 +22,12 @@ run before every push; a green local gate is what "done" means here.
    annotations are a promise to every consumer's type checker. Skipped when mypy is absent.
 6. `python -m build && twine check dist/*` — packaging. A wheel that does not build is not
    publishable, no matter how green the tests are.
-7. `quotarouter status` from the built wheel in a clean venv — proves the package works without
-   the source tree (the plugin shim does not excuse a broken wheel).
-8. `python examples/library.py "query"` from that same venv — the code in the README, executed.
-   A documented example that cannot run is a documented bug.
+7. `quotarouter status` from the built wheel in a clean venv, with every local file redirected to
+   a temporary directory — proves the package works without the source tree (the plugin shim does
+   not excuse a broken wheel), and without the operator's own ledger, chains file or keys.
+8. `PYTHONPATH=. python examples/library.py "query"` — the code in the README, executed. Needs the
+   network and no keys (the anonymous tier answers), so it runs under `--live` only; skipped
+   silently otherwise. A documented example that cannot run is a documented bug.
 
 ## Invariants enforced by tests, not by review
 
